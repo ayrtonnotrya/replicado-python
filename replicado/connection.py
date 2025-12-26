@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import Optional, List, Any, Dict, Tuple
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Engine, text
@@ -7,6 +8,8 @@ from .utils import clean_string
 
 # Carrega variáveis de ambiente do .env
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class DB:
     """
@@ -50,6 +53,7 @@ class DB:
                 pool_pre_ping=True, # Verifica se a conexão está viva antes de usar
                 echo=False # Pode ser parametrizado futuramente
             )
+            logger.info(f"Engine do SQLAlchemy criada para o host: {host}:{port}")
         
         return cls._engine
 
@@ -94,9 +98,12 @@ class DB:
         Returns:
             List[dict]: Lista de resultados.
         """
+        logger.debug(f"SQL: {query} | Params: {params}")
         with cls.get_engine().connect() as conn:
             result = conn.execute(text(query), params or {})
-            return [{k: clean_string(v) for k, v in row._mapping.items()} for row in result]
+            data = [{k: clean_string(v) for k, v in row._mapping.items()} for row in result]
+            logger.debug(f"Retornadas {len(data)} linhas")
+            return data
 
     @classmethod
     def fetch(cls, query: str, params: Optional[dict] = None) -> Optional[dict]:
@@ -110,10 +117,14 @@ class DB:
         Returns:
             Optional[dict]: Resultado ou None.
         """
+        logger.debug(f"SQL: {query} | Params: {params}")
         with cls.get_engine().connect() as conn:
             result = conn.execute(text(query), params or {}).fetchone()
             if result:
-                 return {k: clean_string(v) for k, v in result._mapping.items()}
+                 data = {k: clean_string(v) for k, v in result._mapping.items()}
+                 logger.debug("Linha encontrada")
+                 return data
+            logger.debug("Nenhuma linha encontrada")
             return None
 
     @classmethod

@@ -6,11 +6,22 @@ from datetime import datetime
 # Add project root to path
 sys.path.append(os.getcwd())
 
+from datetime import datetime
+from dotenv import load_dotenv
+import logging
+
 from replicado import Pessoa, Graduacao, Posgraduacao, Bempatrimoniado, Estrutura
 from replicado.utils import clean_string, remove_accents, dia_semana, horario_formatado, data_mes
-from dotenv import load_dotenv
 
 load_dotenv()
+
+# --- CONFIGURAÇÃO DE LOGGING PARA O TESTE ---
+# O usuário da biblioteca pode configurar o logger conforme desejar.
+# Aqui habilitamos o nível DEBUG para ver as queries SQL.
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 def run_tests():
     print("=== INICIANDO TESTES EXTENDIDOS COM DADOS REAIS ===")

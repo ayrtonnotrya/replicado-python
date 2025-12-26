@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 from typing import List, Dict, Any, Optional
 from replicado.connection import DB
 

@@ -1,8 +1,11 @@
 import json
+import logging
 import xml.etree.ElementTree as ET
 from typing import Optional, Dict, Any, Union
 from replicado.connection import DB
 from replicado.utils import unzip, etree_to_dict, get_path
+
+logger = logging.getLogger(__name__)
 
 class Lattes:
     """
@@ -16,7 +19,11 @@ class Lattes:
         """
         query = "SELECT idfpescpq from DIM_PESSOA_XMLUSP WHERE codpes = CONVERT(int, :codpes)"
         result = DB.fetch(query, {"codpes": codpes})
-        return result['idfpescpq'] if result else False
+        if result:
+            logger.debug(f"ID Lattes encontrado para {codpes}: {result['idfpescpq']}")
+            return result['idfpescpq']
+        logger.debug(f"ID Lattes não encontrado para {codpes}")
+        return False
 
     @staticmethod
     def retornar_codpes_por_id_lattes(idfpescpq: str) -> Union[int, bool]:
@@ -36,7 +43,11 @@ class Lattes:
         # but pymssql/sqlalchemy usually handles this better.
         query = "SELECT imgarqxml from DIM_PESSOA_XMLUSP WHERE codpes = CONVERT(int, :codpes)"
         result = DB.fetch(query, {"codpes": codpes})
-        return result['imgarqxml'] if result else False
+        if result and result.get('imgarqxml'):
+            logger.debug(f"Zip Lattes recuperado para {codpes}")
+            return result['imgarqxml']
+        logger.warning(f"Zip Lattes não encontrado para {codpes}")
+        return False
 
     @staticmethod
     def save_zip(codpes: int, to: str = '/tmp') -> bool:
@@ -65,10 +76,14 @@ class Lattes:
                 # Try decoding commonly used encodings
                 for encoding in ['utf-8', 'iso-8859-1']:
                     try:
-                        return xml_bytes.decode(encoding)
+                        content = xml_bytes.decode(encoding)
+                        logger.debug(f"XML Lattes decodificado para {codpes} usando {encoding}")
+                        return content
                     except UnicodeDecodeError:
                         continue
+                logger.warning(f"Falha ao decodificar XML Lattes para {codpes} com codificações padrão")
                 return xml_bytes.decode('utf-8', errors='ignore')
+            logger.error(f"Falha ao descompactar XML Lattes para {codpes}")
         return False
 
     @staticmethod
@@ -86,8 +101,10 @@ class Lattes:
                 root_tag = root.tag
                 if root_tag in d:
                     d = d[root_tag]
+                logger.debug(f"JSON Lattes gerado para {codpes}")
                 return json.dumps(d)
-            except Exception:
+            except Exception as e:
+                logger.error(f"Erro ao converter XML para JSON Lattes para {codpes}: {e}")
                 return False
         return False
 
