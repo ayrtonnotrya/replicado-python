@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "replicado-python"
+version = "0.1.0"
+description = "Uma re-implementação idiomática para Python da biblioteca uspdev/replicado."
+authors = ["Ayrton Douglas Freitas Guimarães <ayrtondouglas@usp.br>"]
+readme = "README.md"
+packages = [{include = "replicado"}]
+
+[tool.poetry.dependencies]
+python = "^3.14"
+sqlalchemy = "^2.0.45"
+pymssql = "^2.3.10"
+python-dotenv = "^1.2.1"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.2"
+pytest-cov = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
