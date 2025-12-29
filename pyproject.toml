@@ -16,7 +16,53 @@ python-dotenv = "^1.2.1"
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
 pytest-cov = "^7.0.0"
+ruff = "^0.14.10"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+# Exclui arquivos e diretórios comuns
+exclude = [
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "dist",
+]
+
+# Comprimento de linha padrão (Black style)
+line-length = 88
+indent-width = 4
+
+# Alvo para versão do Python
+target-version = "py310" # Ruff ainda não tem alvo py314, py310+ é seguro
+
+[tool.ruff.lint]
+# Habilita regras recomendadas
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "ANN", # flake8-annotations (Type hints são obrigatórios pelas regras do projeto)
+]
+ignore = ["ANN401", "ANN202"] # Permite typing.Any e helpers internos sem type hints
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN", "E501"] # Não exige type hints em testes e permite linhas longas
+"tests/manual_test_all.py" = ["ANN", "E501"]
+"replicado/*" = ["E501"] # Permite linhas longas nos módulos por causa das queries SQL legadas
+"replicado/lattes.py" = ["ANN"] # XML parsing complexo com muitos helpers internos
+
+# Permite correções automáticas (safe fixes)
+fixable = ["ALL"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

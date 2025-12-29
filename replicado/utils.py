@@ -1,12 +1,15 @@
+import io
 import unicodedata
+import zipfile
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
+
 
 def clean_string(value: Any) -> Any:
     """
     Remove espaços em branco do início e fim de strings.
     Útil para limpar retornos de colunas CHAR do Sybase.
-    
+
     Args:
         value (Any): O valor a ser limpo.
 
@@ -17,30 +20,34 @@ def clean_string(value: Any) -> Any:
         return value.strip()
     return value
 
+
 def remove_accents(text: str) -> str:
     """
     Remove acentos de uma string.
     """
-    return ''.join(c for c in unicodedata.normalize('NFD', text)
-                  if unicodedata.category(c) != 'Mn')
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
+
 
 def dia_semana(dia: str) -> str:
     """
     Converte código de dia da semana do replicado (ex: 2SG) para nome legível.
     """
     if not dia:
-        return ''
-        
+        return ""
+
     mapa = {
-        '2SG': 'segunda-feira',
-        '3TR': 'terça-feira',
-        '4QA': 'quarta-feira',
-        '5QI': 'quinta-feira',
-        '6SX': 'sexta-feira',
-        '7SB': 'sábado',
-        '1DM': 'domingo',
+        "2SG": "segunda-feira",
+        "3TR": "terça-feira",
+        "4QA": "quarta-feira",
+        "5QI": "quinta-feira",
+        "6SX": "sexta-feira",
+        "7SB": "sábado",
+        "1DM": "domingo",
     }
-    return mapa.get(dia, '')
+    return mapa.get(dia, "")
+
 
 def horario_formatado(horario: str) -> str:
     """
@@ -48,11 +55,12 @@ def horario_formatado(horario: str) -> str:
     """
     if not horario:
         return horario
-        
+
     s_horario = str(horario)
     if len(s_horario) == 4:
         return f"{s_horario[:2]}:{s_horario[2:]}"
     return s_horario
+
 
 def data_mes(data: Any) -> Any:
     """
@@ -61,33 +69,30 @@ def data_mes(data: Any) -> Any:
     """
     if not data:
         return data
-        
+
     if isinstance(data, datetime):
-        return data.strftime('%d/%m/%Y')
-        
+        return data.strftime("%d/%m/%Y")
+
     if isinstance(data, str):
         try:
             # Tenta converter string ISO (YYYY-MM-DD HH:MM:SS ou YYYY-MM-DD)
             # Simplificação: se tiver ' ', split.
-            dt_part = data.split(' ')[0]
-            dt = datetime.strptime(dt_part, '%Y-%m-%d')
-            return dt.strftime('%d/%m/%Y')
+            dt_part = data.split(" ")[0]
+            dt = datetime.strptime(dt_part, "%Y-%m-%d")
+            return dt.strftime("%d/%m/%Y")
         except ValueError:
             pass
-            
+
     return data
 
-import io
-import zipfile
-import xml.etree.ElementTree as ET
 
-def unzip(zip_content: bytes) -> Optional[bytes]:
+def unzip(zip_content: bytes) -> bytes | None:
     """
     Descompacta o primeiro arquivo de um conteúdo binário ZIP.
     """
     if not zip_content:
         return None
-        
+
     try:
         with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
             if not zf.namelist():
@@ -96,18 +101,16 @@ def unzip(zip_content: bytes) -> Optional[bytes]:
     except Exception:
         return None
 
-    except Exception:
-        return None
 
-def etree_to_dict(t) -> Dict[str, Any]:
+def etree_to_dict(t: Any) -> dict[str, Any]:
     """
     Converte um ElementTree para dicionário, estrutura similar ao json_encode(simplexml) do PHP.
     Atributos ficam em '@attributes'.
     """
     d = {}
     if t.attrib:
-        d['@attributes'] = dict(t.attrib)
-        
+        d["@attributes"] = dict(t.attrib)
+
     children = list(t)
     if children:
         dd = {}
@@ -123,22 +126,23 @@ def etree_to_dict(t) -> Dict[str, Any]:
                 else:
                     dd[k] = v
         d.update(dd)
-    
+
     if t.text:
         text = t.text.strip()
         if text:
             if children or t.attrib:
-                 pass # Ignora texto misto por enquanto, foca em dados estruturados
+                pass  # Ignora texto misto por enquanto, foca em dados estruturados
             else:
-                 return {t.tag: text}
-    
-    return {t.tag: d} if d or (t.attrib or children) else {t.tag: ''}
+                return {t.tag: text}
 
-def get_path(data: Dict[str, Any], path: str, default: Any = None) -> Any:
+    return {t.tag: d} if d or (t.attrib or children) else {t.tag: ""}
+
+
+def get_path(data: dict[str, Any], path: str, default: Any = None) -> Any:
     """
     Emula Arr::get do Laravel (dot notation).
     """
-    keys = path.split('.')
+    keys = path.split(".")
     val = data
     for key in keys:
         if isinstance(val, dict) and key in val:

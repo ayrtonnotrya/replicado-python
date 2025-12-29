@@ -18,11 +18,9 @@ Esta versão Python traz modernidade e segurança para o ecossistema USP:
 
 ## 🛠 2. Instalação e Configuração
 
-### Pré-requisitos (Debian/Ubuntu)
-É necessário o FreeTDS para a comunicação com o banco:
-```bash
-sudo apt-get install freetds-dev freetds-bin tdsodbc
-```
+### Pré-requisitos
+*   **Python 3.14**: O projeto utiliza a versão 3.14 (gerenciada via `asm`).
+*   **FreeTDS**: Necessário para comunicação com Sybase/MSSQL (no Debian/Ubuntu: `sudo apt-get install freetds-dev freetds-bin tdsodbc`).
 
 ### Instalação
 ```bash
@@ -108,5 +106,20 @@ logging.basicConfig(level=logging.DEBUG)
 
 ---
 
-## ⚖ 6. Licença
+## 🛠 6. Desenvolvimento
+
+Para contribuir com o projeto, utilize o **Poetry** para gerenciar dependências e o **Ruff** para manter a qualidade do código.
+
+### Linter e Formatador
+```bash
+# Verificar erros e aplicar correções automáticas
+poetry run ruff check . --fix
+
+# Formatar o código
+poetry run ruff format .
+```
+
+---
+
+## ⚖ 7. Licença
 Este projeto é licenciado sob a licença MIT. Para detalhes sobre o banco de dados e políticas de acesso, consulte a [STI USP](https://sti.usp.br).

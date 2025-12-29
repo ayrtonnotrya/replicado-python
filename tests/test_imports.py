@@ -1,11 +1,8 @@
-from replicado import Pessoa
-from replicado import Graduacao
-from replicado import Posgraduacao
-from replicado import Bempatrimoniado
-from replicado import Estrutura
-from replicado.utils import clean_string, remove_accents, dia_semana
+from replicado import Bempatrimoniado, Estrutura, Graduacao, Pessoa, Posgraduacao
+from replicado.utils import clean_string, dia_semana, remove_accents
 
-def test_imports():
+
+def test_imports() -> None:
     assert Pessoa is not None
     assert Graduacao is not None
     assert Posgraduacao is not None

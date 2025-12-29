@@ -1,9 +1,12 @@
 import logging
-logger = logging.getLogger(__name__)
 import os
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Union
+from typing import Any
+
 from replicado.connection import DB
+
+nlogger = logging.getLogger(__name__)
+
 
 class Graduacao:
     """
@@ -14,7 +17,7 @@ class Graduacao:
     def verifica(codpes: int, codundclgi: int) -> bool:
         """
         Verifica se a pessoa é aluna de graduação ativa na unidade indicada.
-        
+
         Args:
             codpes (int): Número USP.
             codundclgi (int): Código da Unidade e Colegiado.
@@ -24,23 +27,25 @@ class Graduacao:
         """
         query = "SELECT * FROM LOCALIZAPESSOA WHERE codpes = :codpes"
         result = DB.fetch_all(query, {"codpes": codpes})
-        
+
         for row in result:
-            if (row['tipvin'] == 'ALUNOGR' and 
-                row['sitatl'] == 'A' and 
-                int(row['codundclg']) == codundclgi):
+            if (
+                row["tipvin"] == "ALUNOGR"
+                and row["sitatl"] == "A"
+                and int(row["codundclg"]) == codundclgi
+            ):
                 return True
         return False
 
     @staticmethod
     def listar_ativos(
-        codcur: Optional[int] = None, 
-        ano_ingresso: Optional[int] = None, 
-        parte_nome: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        codcur: int | None = None,
+        ano_ingresso: int | None = None,
+        parte_nome: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Lista alunos de graduação ativos na unidade.
-        
+
         Args:
             codcur (int, optional): Filtro por código do curso.
             ano_ingresso (int, optional): Filtro por ano de ingresso.
@@ -49,22 +54,22 @@ class Graduacao:
         Returns:
             List[Dict[str, Any]]: Lista de alunos.
         """
-        codundclg = os.getenv('REPLICADO_CODUNDCLG')
-        
+        codundclg = os.getenv("REPLICADO_CODUNDCLG")
+
         query_filter = ""
         params = {}
-        
+
         if parte_nome:
             query_filter = " AND L.nompes LIKE :parteNome "
-            params['parteNome'] = f"%{parte_nome}%"
+            params["parteNome"] = f"%{parte_nome}%"
 
         if codcur:
             query_filter += " AND C.codcur = :codcur"
-            params['codcur'] = codcur
+            params["codcur"] = codcur
 
         if ano_ingresso:
             query_filter += " AND YEAR(V.dtainivin) = :anoIngresso "
-            params['anoIngresso'] = ano_ingresso
+            params["anoIngresso"] = ano_ingresso
 
         # Usando f-string para o IN clause do codundclg pois é configuração segura do ambiente
         query = f"""
@@ -79,18 +84,18 @@ class Graduacao:
             {query_filter}
         ORDER BY L.nompes ASC
         """
-        
+
         return DB.fetch_all(query, params)
 
     @staticmethod
     def contar_ativos() -> int:
         """
         Retorna contagem de alunos ativos na unidade.
-        
+
         Returns:
             int: Quantidade de alunos.
         """
-        codundclg = os.getenv('REPLICADO_CODUNDCLG')
+        codundclg = os.getenv("REPLICADO_CODUNDCLG")
         query = f"""
             SELECT count(*) as total
             FROM LOCALIZAPESSOA
@@ -98,21 +103,21 @@ class Graduacao:
             AND codundclg IN ({codundclg})
         """
         result = DB.fetch(query)
-        return result['total'] if result else 0
+        return result["total"] if result else 0
 
     @staticmethod
-    def obter_curso_ativo(codpes: int) -> Dict[str, Any]:
+    def obter_curso_ativo(codpes: int) -> dict[str, Any]:
         """
         Retorna dados do curso de um aluno ativo na unidade.
-        
+
         Args:
             codpes (int): Número USP.
 
         Returns:
             Dict[str, Any]: Dados do curso ou dicionário vazio.
         """
-        codundclg = os.getenv('REPLICADO_CODUNDCLG')
-        
+        codundclg = os.getenv("REPLICADO_CODUNDCLG")
+
         # Query baseada em Graduacao.obterCursoAtivo.sql
         sql = f"""
             SELECT L.codpes, L.nompes, C.codcur, C.nomcur, H.codhab, H.nomhab, V.dtainivin, V.codcurgrd
@@ -128,10 +133,10 @@ class Graduacao:
         return result if result else {}
 
     @staticmethod
-    def programa(codpes: int) -> Optional[Dict[str, Any]]:
+    def programa(codpes: int) -> dict[str, Any] | None:
         """
         Retorna dados do programa de graduação do aluno.
-        
+
         Args:
             codpes (int): Número USP.
 
@@ -139,18 +144,18 @@ class Graduacao:
             Optional[Dict[str, Any]]: Dados do programa.
         """
         query = """
-            SELECT TOP 1 * FROM HISTPROGGR 
-            WHERE (HISTPROGGR.codpes = :codpes) 
-            AND (HISTPROGGR.stapgm = 'H' OR HISTPROGGR.stapgm = 'R') 
+            SELECT TOP 1 * FROM HISTPROGGR
+            WHERE (HISTPROGGR.codpes = :codpes)
+            AND (HISTPROGGR.stapgm = 'H' OR HISTPROGGR.stapgm = 'R')
             ORDER BY HISTPROGGR.dtaoco DESC
         """
         return DB.fetch(query, {"codpes": codpes})
 
     @staticmethod
-    def nome_curso(codcur: int) -> Optional[str]:
+    def nome_curso(codcur: int) -> str | None:
         """
         Retorna o nome do curso.
-        
+
         Args:
             codcur (int): Código do curso.
 
@@ -159,13 +164,13 @@ class Graduacao:
         """
         query = "SELECT TOP 1 nomcur FROM CURSOGR WHERE codcur = :codcur"
         result = DB.fetch(query, {"codcur": codcur})
-        return result['nomcur'] if result else None
+        return result["nomcur"] if result else None
 
     @staticmethod
-    def nome_habilitacao(codhab: int, codcur: int) -> Optional[str]:
+    def nome_habilitacao(codhab: int, codcur: int) -> str | None:
         """
         Retorna o nome da habilitação.
-        
+
         Args:
             codhab (int): Código da habilitação.
             codcur (int): Código do curso.
@@ -174,17 +179,17 @@ class Graduacao:
             Optional[str]: Nome da habilitação.
         """
         query = """
-            SELECT TOP 1 nomhab FROM HABILITACAOGR 
+            SELECT TOP 1 nomhab FROM HABILITACAOGR
             WHERE codhab = :codhab AND codcur = :codcur
         """
         result = DB.fetch(query, {"codhab": codhab, "codcur": codcur})
-        return result['nomhab'] if result else None
+        return result["nomhab"] if result else None
 
     @staticmethod
-    def obter_cursos_habilitacoes(codundclgi: int) -> List[Dict[str, Any]]:
+    def obter_cursos_habilitacoes(codundclgi: int) -> list[dict[str, Any]]:
         """
         Obtém cursos e habilitações de uma unidade.
-        
+
         Args:
             codundclgi (int): Código da unidade.
 
@@ -201,15 +206,15 @@ class Graduacao:
         return DB.fetch_all(query, {"codundclgi": codundclgi})
 
     @staticmethod
-    def listar_disciplinas() -> List[Dict[str, Any]]:
+    def listar_disciplinas() -> list[dict[str, Any]]:
         """
         Lista disciplinas de graduação ativas na unidade.
-        
+
         Returns:
             List[Dict[str, Any]]: Lista de disciplinas.
         """
-        codundclgs = os.getenv('REPLICADO_CODUNDCLG')
-        
+        codundclgs = os.getenv("REPLICADO_CODUNDCLG")
+
         # Baseado em Graduacao.listarDisciplinas.sql
         sql = f"""
             SELECT D1.*
@@ -223,10 +228,10 @@ class Graduacao:
         return DB.fetch_all(sql)
 
     @staticmethod
-    def nome_disciplina(coddis: str) -> Optional[str]:
+    def nome_disciplina(coddis: str) -> str | None:
         """
         Retorna o nome da disciplina.
-        
+
         Args:
             coddis (str): Código da disciplina.
 
@@ -240,25 +245,25 @@ class Graduacao:
             )) AND (D1.coddis = :coddis)
         """
         result = DB.fetch(query, {"coddis": coddis})
-        return result['nomdis'] if result else None
+        return result["nomdis"] if result else None
 
     @staticmethod
-    def obter_disciplinas(arr_coddis: List[str]) -> List[Dict[str, Any]]:
+    def obter_disciplinas(arr_coddis: list[str]) -> list[dict[str, Any]]:
         """
         Método para obter as disciplinas de graduação oferecidas na unidade.
         """
         if not arr_coddis:
             return []
-            
+
         params = {}
         or_clauses = []
         for i, sgldis in enumerate(arr_coddis):
-             key = f"sgldis_{i}"
-             or_clauses.append(f"(D1.coddis LIKE :{key})")
-             params[key] = f"{sgldis}%"
-             
+            key = f"sgldis_{i}"
+            or_clauses.append(f"(D1.coddis LIKE :{key})")
+            params[key] = f"{sgldis}%"
+
         where_clause = " OR ".join(or_clauses)
-        
+
         query = f"""
             SELECT D1.* FROM DISCIPLINAGR AS D1
             WHERE (D1.verdis = (
@@ -269,29 +274,29 @@ class Graduacao:
         return DB.fetch_all(query, params)
 
     @staticmethod
-    def disciplinas_concluidas(codpes: int, codundclgi: int) -> List[Dict[str, Any]]:
+    def disciplinas_concluidas(codpes: int, codundclgi: int) -> list[dict[str, Any]]:
         """
         Método para trazer as disciplinas, status e créditos concluídos.
         """
         programa_data = Graduacao.programa(codpes)
         if not programa_data:
             return []
-        
+
         # Original PHP logic:
         # $programa = $programa['codpgm'];
         # $ingresso = self::curso($codpes, $codundclgi);
         # $ingresso = substr($ingresso['dtainivin'], 0, 4);
-        
-        codpgm = programa_data['codpgm']
+
+        codpgm = programa_data["codpgm"]
         curso_data = Graduacao.obter_curso_ativo(codpes)
-        # Note: PHP uses self::curso which is deprecated for obterCursoAtivo 
+        # Note: PHP uses self::curso which is deprecated for obterCursoAtivo
         # but obterCursoAtivo uses codundclg from env, PHP version passed codundclgi.
         # Assuming obtaining active course is sufficient.
-        if not curso_data or 'dtainivin' not in curso_data:
-             return []
-             
-        dtainivin = str(curso_data['dtainivin'])
-        ingresso = dtainivin[:4] if dtainivin else datetime.now().year # Fallback?
+        if not curso_data or "dtainivin" not in curso_data:
+            return []
+
+        dtainivin = str(curso_data["dtainivin"])
+        ingresso = dtainivin[:4] if dtainivin else datetime.now().year  # Fallback?
 
         query = """
             SELECT DISTINCT H.coddis, H.rstfim, D.creaul, D.cretrb FROM HISTESCOLARGR AS H, DISCIPLINAGR AS D
@@ -300,18 +305,18 @@ class Graduacao:
             AND (H.rstfim = 'A' OR H.rstfim = 'D' OR (H.rstfim IS NULL AND H.stamtr = 'M' AND H.codtur LIKE :ingresso_like))
             ORDER BY H.coddis
         """
-        
+
         params = {
-            'codpes': codpes,
-            'codpgm': codpgm,
-            'ingresso_int': int(ingresso),
-            'ingresso_like': f"{ingresso}1%"
+            "codpes": codpes,
+            "codpgm": codpgm,
+            "ingresso_int": int(ingresso),
+            "ingresso_like": f"{ingresso}1%",
         }
-        
+
         return DB.fetch_all(query, params)
 
     @staticmethod
-    def creditos_disciplina(coddis: str) -> Optional[int]:
+    def creditos_disciplina(coddis: str) -> int | None:
         """
         Método para trazer os créditos de uma disciplina.
         """
@@ -322,17 +327,19 @@ class Graduacao:
             )) AND (D1.coddis = :coddis)
         """
         result = DB.fetch(query, {"coddis": coddis})
-        return result['creaul'] if result else None
+        return result["creaul"] if result else None
 
     @staticmethod
-    def creditos_disciplinas_concluidas_aproveitamento_estudos_exterior(codpes: int, codundclgi: int) -> List[Dict[str, Any]]:
+    def creditos_disciplinas_concluidas_aproveitamento_estudos_exterior(
+        codpes: int, codundclgi: int
+    ) -> list[dict[str, Any]]:
         """
         Créditos atribuídos por Aproveitamento de Estudos no exterior.
         """
         programa_data = Graduacao.programa(codpes)
         if not programa_data:
             return []
-        codpgm = programa_data['codpgm']
+        codpgm = programa_data["codpgm"]
 
         query = """
             SELECT DISTINCT H.coddis, R.creaulatb
@@ -345,7 +352,7 @@ class Graduacao:
         return DB.fetch_all(query, {"codpes": codpes, "codpgm": codpgm})
 
     @staticmethod
-    def disciplinas_curriculo(codcur: int, codhab: int) -> List[Dict[str, Any]]:
+    def disciplinas_curriculo(codcur: int, codhab: int) -> list[dict[str, Any]]:
         """
         Disciplinas (grade curricular) para um currículo atual no JúpiterWeb.
         """
@@ -360,7 +367,9 @@ class Graduacao:
         return DB.fetch_all(query, {"codcur": codcur, "codhab": codhab})
 
     @staticmethod
-    def disciplinas_equivalentes_curriculo(codcur: int, codhab: int) -> List[Dict[str, Any]]:
+    def disciplinas_equivalentes_curriculo(
+        codcur: int, codhab: int
+    ) -> list[dict[str, Any]]:
         """
         Disciplinas equivalentes de um currículo atual no JúpiterWeb.
         """
@@ -376,17 +385,17 @@ class Graduacao:
         return DB.fetch_all(query, {"codcur": codcur, "codhab": codhab})
 
     @staticmethod
-    def setor_aluno(codpes: int, codundclgi: int) -> Dict[str, Any]:
+    def setor_aluno(codpes: int, codundclgi: int) -> dict[str, Any]:
         """
         Departamento de Ensino do Aluno de Graduação.
         """
         curso = Graduacao.obter_curso_ativo(codpes)
         if not curso:
-             return {'nomabvset': 'DEPARTAMENTO NÃO ENCONTRADO'}
-             
-        codcur = curso['codcur']
-        codhab = curso['codhab']
-        
+            return {"nomabvset": "DEPARTAMENTO NÃO ENCONTRADO"}
+
+        codcur = curso["codcur"]
+        codhab = curso["codhab"]
+
         query = """
             SELECT TOP 1 L.nomabvset FROM CURSOGRCOORDENADOR AS C
             INNER JOIN LOCALIZAPESSOA AS L ON C.codpesdct = L.codpes
@@ -394,16 +403,16 @@ class Graduacao:
         """
         result = DB.fetch(query, {"codcur": codcur, "codhab": codhab})
         if not result:
-             return {'nomabvset': 'DEPARTAMENTO NÃO ENCONTRADO'}
+            return {"nomabvset": "DEPARTAMENTO NÃO ENCONTRADO"}
         return result
 
     @staticmethod
-    def contar_ativos_por_genero(sexpes: str, codcur: Optional[int] = None) -> int:
+    def contar_ativos_por_genero(sexpes: str, codcur: int | None = None) -> int:
         """
         Método para retornar o total de alunos de graduação do gênero.
         """
-        unidades = os.getenv('REPLICADO_CODUNDCLG')
-        
+        unidades = os.getenv("REPLICADO_CODUNDCLG")
+
         query = f"""
             SELECT COUNT (DISTINCT L.codpes) as total
             FROM LOCALIZAPESSOA L
@@ -413,14 +422,14 @@ class Graduacao:
             AND L.codundclg IN ({unidades})
             AND P.sexpes = :sexpes
         """
-        
-        params = {'sexpes': sexpes}
+
+        params = {"sexpes": sexpes}
         if codcur:
             query += " AND H.codcur = CONVERT(INT, :codcur) "
-            params['codcur'] = codcur
+            params["codcur"] = codcur
 
         result = DB.fetch(query, params)
-        return result['total'] if result else 0
+        return result["total"] if result else 0
 
     @staticmethod
     def verificar_coordenador_curso_grad(codpes: int) -> bool:
@@ -433,7 +442,7 @@ class Graduacao:
             WHERE codpesdct = convert(int, :codpes) AND (getdate() BETWEEN dtainicdn AND dtafimcdn)
         """
         result = DB.fetch(query, {"codpes": codpes})
-        return result['qtde_cursos'] > 0 if result else False
+        return result["qtde_cursos"] > 0 if result else False
 
     @staticmethod
     def verificar_pessoa_graduada_unidade(codpes: int) -> bool:
@@ -443,7 +452,7 @@ class Graduacao:
         cursos_cods = Graduacao.obter_codigos_cursos()
         if not cursos_cods:
             return False
-        
+
         cursos_in = ",".join(map(str, cursos_cods))
 
         query = f"""
@@ -455,12 +464,8 @@ class Graduacao:
             AND h.codcur IN ({cursos_in})
         """
         # Note: Original uses "Conclus_o" for LIKE to match variations or encoding issues?
-        params = {
-            'codpes': codpes,
-            'tipencpgm': 'Conclus_o',
-            'tipenchab': 'Conclus_o'
-        }
-        
+        params = {"codpes": codpes, "tipencpgm": "Conclus_o", "tipenchab": "Conclus_o"}
+
         result = DB.fetch(query, params)
         return bool(result)
 
@@ -479,14 +484,14 @@ class Graduacao:
         return bool(result)
 
     @staticmethod
-    def obter_grade_horaria(codpes: int) -> List[Dict[str, Any]]:
+    def obter_grade_horaria(codpes: int) -> list[dict[str, Any]]:
         """
         Retorna grade horária atual.
         """
         current_date = datetime.now()
         semester = 2 if current_date.month > 6 else 1
-        current_term_code = f"{current_date.year}{semester}" # ex: 20251
-        
+        current_term_code = f"{current_date.year}{semester}"  # ex: 20251
+
         query = """
             SELECT h.coddis, h.codtur, o.diasmnocp, p.horent, p.horsai FROM HISTESCOLARGR h
             INNER JOIN OCUPTURMA o ON (h.coddis = o.coddis AND h.codtur = o.codtur)
@@ -495,15 +500,17 @@ class Graduacao:
         """
         # Original uses '%{$current}%' which seems to act as simple contains or specific format.
         # Usually codtur is YYYYSEMESTRE... or similar.
-        return DB.fetch_all(query, {"codpes": codpes, "term_like": f"%{current_term_code}%"})
-        
+        return DB.fetch_all(
+            query, {"codpes": codpes, "term_like": f"%{current_term_code}%"}
+        )
+
     @staticmethod
-    def obter_codigos_cursos() -> List[int]:
+    def obter_codigos_cursos() -> list[int]:
         """
         Retornar apenas códigos de curso de Graduação da unidade.
         """
-        codundclg = os.getenv('REPLICADO_CODUNDCLG')
-        
+        codundclg = os.getenv("REPLICADO_CODUNDCLG")
+
         query = """
             SELECT codcur
             FROM CURSOGR
@@ -514,23 +521,25 @@ class Graduacao:
         # The PHP actually did: $param = ['codclg' => $codigo_unidade];
         # If env is "45,46", this might fail if not split.
         # We will assume single unit for now or first one if comma.
-        codclg = int(codundclg.split(',')[0]) if ',' in codundclg else codundclg
-        
+        codclg = int(codundclg.split(",")[0]) if "," in codundclg else codundclg
+
         result = DB.fetch_all(query, {"codclg": codclg})
-        return [row['codcur'] for row in result]
+        return [row["codcur"] for row in result]
 
     @staticmethod
-    def listar_disciplinas_grade_curricular(codcur: int, codhab: int, tipobg: str = 'O') -> List[Dict[str, Any]]:
+    def listar_disciplinas_grade_curricular(
+        codcur: int, codhab: int, tipobg: str = "O"
+    ) -> list[dict[str, Any]]:
         """
         Retorna lista das disciplinas de uma grade curricular.
         """
         query = """
             SELECT G.coddis, D.nomdis
-            FROM GRADECURRICULAR G 
+            FROM GRADECURRICULAR G
             INNER JOIN DISCIPLINAGR D ON (G.coddis = D.coddis AND G.verdis = D.verdis)
             WHERE G.codcrl IN (SELECT TOP 1 codcrl
             FROM CURRICULOGR
-            WHERE codcur = convert(int, :codcur) AND codhab = convert(int, :codhab) 
+            WHERE codcur = convert(int, :codcur) AND codhab = convert(int, :codhab)
             AND C.dtafimcrl IS NULL) AND G.tipobg = :tipobg
         """
         # Note: The query above is derived from file Graduacao.listarDisciplinasGradeCurricular.sql read earlier
@@ -541,79 +550,83 @@ class Graduacao:
         # Yes, alias C is used.
         query = """
             SELECT G.coddis, D.nomdis
-            FROM GRADECURRICULAR G 
+            FROM GRADECURRICULAR G
             INNER JOIN DISCIPLINAGR D ON (G.coddis = D.coddis AND G.verdis = D.verdis)
             WHERE G.codcrl IN (
                 SELECT TOP 1 C.codcrl
                 FROM CURRICULOGR C
-                WHERE C.codcur = convert(int, :codcur) AND C.codhab = convert(int, :codhab) 
+                WHERE C.codcur = convert(int, :codcur) AND C.codhab = convert(int, :codhab)
                 AND C.dtafimcrl IS NULL
                 ORDER BY C.dtainicrl DESC
             ) AND G.tipobg = :tipobg
         """
-        return DB.fetch_all(query, {"codcur": codcur, "codhab": codhab, "tipobg": tipobg})
+        return DB.fetch_all(
+            query, {"codcur": codcur, "codhab": codhab, "tipobg": tipobg}
+        )
 
     @staticmethod
-    def listar_intercambios() -> List[Dict[str, Any]]:
+    def listar_intercambios() -> list[dict[str, Any]]:
         """
         Retorna lista com os intercâmbios internacionais ativos.
         """
-        codundclg = os.getenv('REPLICADO_CODUNDCLG')
+        codundclg = os.getenv("REPLICADO_CODUNDCLG")
         query = f"""
             SELECT DISTINCT I.codpes, O.nomorgpnt, P.nompas from INTERCAMBIOUSPORGAO I
-            INNER JOIN LOCALIZAPESSOA L ON I.codpes = L.codpes 
+            INNER JOIN LOCALIZAPESSOA L ON I.codpes = L.codpes
             INNER JOIN ORGAOPRETENDENTE O ON I.codorg = O.codorg
             INNER JOIN PAIS P ON O.codpas = P.codpas
             WHERE L.tipvin = 'ALUNOGR'
-            AND I.dtafimitb > GETDATE() 
+            AND I.dtafimitb > GETDATE()
             AND L.codundclg IN ({codundclg})
         """
         return DB.fetch_all(query)
 
     @staticmethod
-    def obter_intercambio_por_codpes(codpes: int) -> List[Dict[str, Any]]:
+    def obter_intercambio_por_codpes(codpes: int) -> list[dict[str, Any]]:
         """
         Retorna os dados sobre o intercâmbio do aluno.
         """
-        codundclg = os.getenv('REPLICADO_CODUNDCLG')
+        codundclg = os.getenv("REPLICADO_CODUNDCLG")
         query = f"""
             SELECT O.nomorgpnt, P.nompas, I.dtainiitb, I.dtafimitb from INTERCAMBIOUSPORGAO I
-            INNER JOIN LOCALIZAPESSOA L ON I.codpes = L.codpes 
+            INNER JOIN LOCALIZAPESSOA L ON I.codpes = L.codpes
             INNER JOIN ORGAOPRETENDENTE O ON I.codorg = O.codorg
             INNER JOIN PAIS P ON O.codpas = P.codpas
             WHERE L.tipvin = 'ALUNOGR'
-            AND I.dtafimitb > GETDATE() 
-            AND L.codundclg IN ({codundclg})   
+            AND I.dtafimitb > GETDATE()
+            AND L.codundclg IN ({codundclg})
             AND I.codpes = convert(int,:codpes)
         """
         return DB.fetch_all(query, {"codpes": codpes})
 
     @staticmethod
     def listar_disciplinas_aluno(
-        codpes: int, 
-        codpgm: Optional[int] = None, 
-        rstfim: List[str] = ['A', 'RN', 'RA', 'RF']
-    ) -> List[Dict[str, Any]]:
+        codpes: int,
+        codpgm: int | None = None,
+        rstfim: list[str] = None,
+    ) -> list[dict[str, Any]]:
         """
         Lista as disciplinas cursadas por um aluno.
         """
-        params = {'codpes': codpes}
-        
+        if rstfim is None:
+            rstfim = ["A", "RN", "RA", "RF"]
+        params = {"codpes": codpes}
+
         if codpgm is None:
             query_codpgm = "H.codpgm = (SELECT MAX(H2.codpgm) FROM HISTESCOLARGR H2 WHERE H2.codpes = convert(int,:codpes))"
         else:
             query_codpgm = "H.codpgm = CONVERT(INT,:codpgm)"
-            params['codpgm'] = codpgm
-            
+            params["codpgm"] = codpgm
+
         # Handle NULL in rstfim list
         query_rstfim_null = ""
-        valid_rstfim = [r for r in rstfim if r != 'NULL']
-        if 'NULL' in rstfim:
-             query_rstfim_null = "OR H.rstfim IS NULL"
-        
+        valid_rstfim = [r for r in rstfim if r != "NULL"]
+        if "NULL" in rstfim:
+            query_rstfim_null = "OR H.rstfim IS NULL"
+
         rstfim_str = "', '".join(valid_rstfim)
         rstfim_clause = f"(H.rstfim IN ('{rstfim_str}') {query_rstfim_null})"
-        
+
         query = f"""
             SELECT D.coddis, D.nomdis, D.creaul, D.cretrb
                 , H.notfim, H.notfim2, H.rstfim, H.codtur
@@ -623,35 +636,37 @@ class Graduacao:
                 AND {rstfim_clause}
                 AND {query_codpgm}
         """
-        
+
         return DB.fetch_all(query, params)
 
     @staticmethod
     def obter_media_ponderada(
-        codpes: int, 
-        codpgm: Optional[int] = None, 
-        rstfim: List[str] = ['A', 'RN', 'RA', 'RF']
+        codpes: int,
+        codpgm: int | None = None,
+        rstfim: list[str] = None,
     ) -> float:
         """
         Retorna a média ponderada.
         """
+        if rstfim is None:
+            rstfim = ["A", "RN", "RA", "RF"]
         disciplinas = Graduacao.listar_disciplinas_aluno(codpes, codpgm, rstfim)
-        
+
         creditos = 0
         soma = 0.0
-        
+
         for row in disciplinas:
-            creaul = row['creaul'] or 0
-            cretrb = row['cretrb'] or 0
+            creaul = row["creaul"] or 0
+            cretrb = row["cretrb"] or 0
             total_cre = creaul + cretrb
-            
+
             # PHP: $nota = $row['notfim2'] ?: $row['notfim'];
             # If notfim2 is not null/empty use it, else notfim
-            nota_val = row['notfim2']
-            if nota_val is None or nota_val == '':
-                nota_val = row['notfim']
-            
-            if nota_val is not None and str(nota_val).strip() != '':
+            nota_val = row["notfim2"]
+            if nota_val is None or nota_val == "":
+                nota_val = row["notfim"]
+
+            if nota_val is not None and str(nota_val).strip() != "":
                 try:
                     # Replace comma with dot if necessary usually sql returns float or decimal
                     # python driver might return float direct
@@ -664,31 +679,33 @@ class Graduacao:
         return round(soma / creditos, 1) if creditos > 0 else 0.0
 
     @staticmethod
-    def obter_media_ponderada_limpa(codpes: int, codpgm: Optional[int] = None) -> float:
-        return Graduacao.obter_media_ponderada(codpes, codpgm, ['A'])
+    def obter_media_ponderada_limpa(codpes: int, codpgm: int | None = None) -> float:
+        return Graduacao.obter_media_ponderada(codpes, codpgm, ["A"])
 
     @staticmethod
-    def obter_media_ponderada_suja(codpes: int, codpgm: Optional[int] = None) -> float:
-        return Graduacao.obter_media_ponderada(codpes, codpgm, ['A', 'RN', 'RA', 'RF'])
+    def obter_media_ponderada_suja(codpes: int, codpgm: int | None = None) -> float:
+        return Graduacao.obter_media_ponderada(codpes, codpgm, ["A", "RN", "RA", "RF"])
 
     @staticmethod
     def listar_disciplinas_aluno_ano_semestre(
-        codpes: int, 
-        ano_semestre: int, 
-        rstfim: List[str] = ['A', 'AR', 'R', 'RN', 'RA', 'RF', 'NULL']
-    ) -> List[Dict[str, Any]]:
+        codpes: int,
+        ano_semestre: int,
+        rstfim: list[str] = None,
+    ) -> list[dict[str, Any]]:
         """
         Retorna lista de disciplinas cursadas pelo aluno em determinado semestre.
         """
         # Handle NULL in rstfim list
+        if rstfim is None:
+            rstfim = ["A", "AR", "R", "RN", "RA", "RF", "NULL"]
         query_rstfim_null = ""
-        valid_rstfim = [r for r in rstfim if r != 'NULL']
-        if 'NULL' in rstfim:
-             query_rstfim_null = "OR H.rstfim IS NULL"
-        
+        valid_rstfim = [r for r in rstfim if r != "NULL"]
+        if "NULL" in rstfim:
+            query_rstfim_null = "OR H.rstfim IS NULL"
+
         rstfim_str = "', '".join(valid_rstfim)
         rstfim_clause = f"(H.rstfim IN ('{rstfim_str}') {query_rstfim_null})"
-        
+
         query = f"""
             SELECT
                 DISTINCT PROF.nompes, PROF.codpes, O.codtur, T.tiptur, D.coddis, D.nomdis, D.verdis, H.rstfim
@@ -708,21 +725,22 @@ class Graduacao:
             ORDER BY
                 D.nomdis
         """
-        
-        return DB.fetch_all(query, {"codpes": codpes, "anoSemestre": f"{ano_semestre}%"})
+
+        return DB.fetch_all(
+            query, {"codpes": codpes, "anoSemestre": f"{ano_semestre}%"}
+        )
 
     @staticmethod
-    def listar_departamentos_de_ensino() -> List[Dict[str, Any]]:
+    def listar_departamentos_de_ensino() -> list[dict[str, Any]]:
         """
         Retorna lista com os departamentos de ensino da unidade.
         """
-        codundclgs = os.getenv('REPLICADO_CODUNDCLG')
+        codundclgs = os.getenv("REPLICADO_CODUNDCLG")
         query = f"""
-            SELECT * FROM SETOR 
-            WHERE codund IN ({codundclgs}) 
-            AND tipset = 'Departamento de Ensino' 
-            AND dtadtvset IS NULL 
+            SELECT * FROM SETOR
+            WHERE codund IN ({codundclgs})
+            AND tipset = 'Departamento de Ensino'
+            AND dtadtvset IS NULL
             ORDER BY nomset
         """
         return DB.fetch_all(query)
-

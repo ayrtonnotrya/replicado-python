@@ -1,11 +1,11 @@
 import logging
 
-# Configuração do logger da biblioteca
-logger = logging.getLogger('replicado')
-logger.addHandler(logging.NullHandler())
+from .bempatrimoniado import Bempatrimoniado as Bempatrimoniado
+from .estrutura import Estrutura as Estrutura
+from .graduacao import Graduacao as Graduacao
+from .pessoa import Pessoa as Pessoa
+from .posgraduacao import Posgraduacao as Posgraduacao
 
-from .pessoa import Pessoa
-from .graduacao import Graduacao
-from .posgraduacao import Posgraduacao
-from .bempatrimoniado import Bempatrimoniado
-from .estrutura import Estrutura
+# Configuração do logger da biblioteca
+logger = logging.getLogger("replicado")
+logger.addHandler(logging.NullHandler())

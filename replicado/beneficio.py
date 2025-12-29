@@ -1,8 +1,10 @@
 import logging
-logger = logging.getLogger(__name__)
-from typing import List, Dict, Any, Union
+from typing import Any
+
 from replicado.connection import DB
-from replicado.utils import clean_string
+
+nlogger = logging.getLogger(__name__)
+
 
 class Beneficio:
     """
@@ -10,7 +12,7 @@ class Beneficio:
     """
 
     @staticmethod
-    def listar_beneficios() -> List[Dict[str, Any]]:
+    def listar_beneficios() -> list[dict[str, Any]]:
         """
         Retorna a lista de benefícos concedidos e não encerrados.
         """
@@ -24,18 +26,22 @@ class Beneficio:
         return DB.fetch_all(query)
 
     @staticmethod
-    def listar_monitores_pro_aluno(codigos_sala_monitor: Union[str, List[int], int]) -> List[Dict[str, Any]]:
+    def listar_monitores_pro_aluno(
+        codigos_sala_monitor: str | list[int] | int,
+    ) -> list[dict[str, Any]]:
         """
         Retorna a lista de monitores da sala Pró-Aluno.
-        
+
         Args:
             codigos_sala_monitor (Union[str, List[int], int]): Pode ser string separada por vírgula, inteiro ou lista de inteiros.
         """
-        if isinstance(codigos_sala_monitor, (int, str)) and not isinstance(codigos_sala_monitor, list):
-             codigos_str = str(codigos_sala_monitor)
-             cods = [c.strip() for c in codigos_str.split(',') if c.strip()]
+        if isinstance(codigos_sala_monitor, (int, str)) and not isinstance(
+            codigos_sala_monitor, list
+        ):
+            codigos_str = str(codigos_sala_monitor)
+            cods = [c.strip() for c in codigos_str.split(",") if c.strip()]
         else:
-             cods = [str(c) for c in codigos_sala_monitor]
+            cods = [str(c) for c in codigos_sala_monitor]
 
         if not cods:
             return []
@@ -45,12 +51,12 @@ class Beneficio:
         params = {}
         placeholders = []
         for i, code in enumerate(cods):
-             key = f"cod{i}"
-             params[key] = code
-             placeholders.append(f":{key}")
-             
+            key = f"cod{i}"
+            params[key] = code
+            placeholders.append(f":{key}")
+
         in_clause = ", ".join(placeholders)
-        
+
         query = f"""
             SELECT DISTINCT
                 t1.codpes,

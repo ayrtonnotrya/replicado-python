@@ -1,9 +1,12 @@
 import logging
-logger = logging.getLogger(__name__)
-from typing import List, Dict, Any, Union, Optional
-from datetime import date
 import os
+from datetime import date
+from typing import Any
+
 from replicado.connection import DB
+
+nlogger = logging.getLogger(__name__)
+
 
 class CEU:
     """
@@ -12,10 +15,10 @@ class CEU:
 
     @staticmethod
     def listar_cursos(
-        ano_inicio: Optional[int] = None, 
-        ano_fim: Optional[int] = None, 
-        deptos: Optional[Union[List[int], str]] = None
-    ) -> List[Dict[str, Any]]:
+        ano_inicio: int | None = None,
+        ano_fim: int | None = None,
+        deptos: list[int] | str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Método para retornar os cursos de cultura e extensão de um período.
         """
@@ -55,23 +58,23 @@ class CEU:
         """
 
         # Replace __codundclgs__
-        codundclgs = os.getenv('REPLICADO_CODUNDCLG', '')
-        query = query.replace('__codundclgs__', codundclgs)
+        codundclgs = os.getenv("REPLICADO_CODUNDCLG", "")
+        query = query.replace("__codundclgs__", codundclgs)
 
         # Handle deptos
-        query_deptos = ''
+        query_deptos = ""
         if deptos:
             if isinstance(deptos, list):
-                depto_str = ','.join(str(d) for d in deptos)
+                depto_str = ",".join(str(d) for d in deptos)
             else:
                 depto_str = str(deptos)
             query_deptos = f"AND C.codsetdep IN ({depto_str})"
-        
-        query = query.replace('__deptos__', query_deptos)
 
-        params = {'ano_inicio': ano_inicio, 'ano_fim': ano_fim}
+        query = query.replace("__deptos__", query_deptos)
+
+        params = {"ano_inicio": ano_inicio, "ano_fim": ano_fim}
         cursos = DB.fetch_all(query, params)
-        
+
         # Enrich with ministrantes
         for curso in cursos:
             q_min = """
@@ -83,13 +86,13 @@ class CEU:
                     AND o.codedicurceu = convert(int,:codedicurceu)
             """
             p_min = {
-                'codcurceu': curso['codcurceu'],
-                'codedicurceu': curso['codedicurceu']
+                "codcurceu": curso["codcurceu"],
+                "codedicurceu": curso["codedicurceu"],
             }
             ministrantes = DB.fetch_all(q_min, p_min)
             if ministrantes:
-                curso['ministrantes'] = ', '.join([m['nompes'] for m in ministrantes])
+                curso["ministrantes"] = ", ".join([m["nompes"] for m in ministrantes])
             else:
-                curso['ministrantes'] = ''
-                
+                curso["ministrantes"] = ""
+
         return cursos

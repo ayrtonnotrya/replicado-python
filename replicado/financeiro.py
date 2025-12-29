@@ -1,8 +1,11 @@
 import logging
-logger = logging.getLogger(__name__)
-from typing import List, Dict, Any
 import os
+from typing import Any
+
 from replicado.connection import DB
+
+nlogger = logging.getLogger(__name__)
+
 
 class Financeiro:
     """
@@ -10,19 +13,19 @@ class Financeiro:
     """
 
     @staticmethod
-    def listar_centros_despesas() -> List[Dict[str, Any]]:
+    def listar_centros_despesas() -> list[dict[str, Any]]:
         """
         Método que retorna os centros de despesas.
         Utiliza o REPLICADO_CODUNDCLG do ambiente.
         """
-        unidades = os.getenv('REPLICADO_CODUNDCLG', '')
+        unidades = os.getenv("REPLICADO_CODUNDCLG", "")
         if not unidades:
             return []
-            
-        # Nota: Assim como no PHP, injetamos as unidades diretamente na query 
+
+        # Nota: Assim como no PHP, injetamos as unidades diretamente na query
         # pois é uma lista de IDs. Assumimos que o ambiente é confiável.
         query = f"""
-            SELECT etrhie 
+            SELECT etrhie
             FROM CENTRODESPHIERARQUIA
             WHERE dtadtv IS NULL
             AND codunddsp IN ({unidades})
