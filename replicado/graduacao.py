@@ -14,6 +14,128 @@ class Graduacao:
     """
 
     @staticmethod
+    def obter_nome_social(codpes: int) -> str | None:
+        """
+        Retorna o nome social registrado na tabela PESSOA.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            Optional[str]: Nome social ou None se não houver.
+        """
+        query = "SELECT nomcnhpes FROM PESSOA WHERE codpes = :codpes AND stautlnomsoc = 'S'"
+        result = DB.fetch(query, {"codpes": codpes})
+        return result["nomcnhpes"].strip() if result and result["nomcnhpes"] else None
+
+    @staticmethod
+    def obter_vencimento_identidade(codpes: int) -> str | None:
+        """
+        Retorna a data de validade do documento de identificação.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            Optional[str]: Data de validade (string formatada) ou None.
+        """
+        query = "SELECT dtafimvalidf FROM PESSOA WHERE codpes = :codpes"
+        result = DB.fetch(query, {"codpes": codpes})
+        if result and result["dtafimvalidf"]:
+            return result["dtafimvalidf"].strftime("%d/%m/%Y")
+        return None
+
+    @staticmethod
+    def obter_vencimento_passaporte(codpes: int) -> str | None:
+        """
+        Retorna a data de validade do passaporte se disponível.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            Optional[str]: Data de validade ou None.
+        """
+        # No esquema Sybase, dados de passaporte podem estar na tabela de documentos complementares
+        # ou como um tipo específico em PESSOA se tipdocidf for 'Passap'
+        query = """
+            SELECT dtafimvalidf FROM PESSOA
+            WHERE codpes = :codpes AND tipdocidf = 'Passap'
+        """
+        result = DB.fetch(query, {"codpes": codpes})
+        if result and result["dtafimvalidf"]:
+            return result["dtafimvalidf"].strftime("%d/%m/%Y")
+        return None
+
+    @staticmethod
+    def listar_ingressantes(ano_ingresso: int) -> list[dict[str, Any]]:
+        """
+        Lista alunos que ingressaram em um determinado ano.
+
+        Args:
+            ano_ingresso (int): Ano de ingresso.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de ingressantes.
+        """
+        query = """
+            SELECT p.codpes, p.nompes, pg.dtaing
+            FROM PESSOA p
+            INNER JOIN PROGRAMAGR pg ON p.codpes = pg.codpes
+            WHERE YEAR(pg.dtaing) = :ano_ingresso
+            ORDER BY p.nompes ASC
+        """
+        result = DB.fetch_all(query, {"ano_ingresso": ano_ingresso})
+        for row in result:
+            row["nompes"] = row["nompes"].strip()
+        return result
+
+    @staticmethod
+    def obter_notas_ingresso(codpes: int) -> list[dict[str, Any]]:
+        """
+        Detalha as notas de vestibular/SISU do aluno.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de notas.
+        """
+        query = """
+            SELECT n.codtipmiaing, t.tipmiaing, n.noting
+            FROM NOTASINGRESSOGR n
+            INNER JOIN TIPOMATERIAING t ON n.codtipmiaing = t.codtipmiaing
+            WHERE n.codpes = :codpes
+        """
+        result = DB.fetch_all(query, {"codpes": codpes})
+        for row in result:
+            row["tipmiaing"] = row["tipmiaing"].strip()
+        return result
+
+    @staticmethod
+    def listar_trancamentos_aluno(codpes: int) -> list[dict[str, Any]]:
+        """
+        Lista os períodos de trancamento do aluno.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de períodos de trancamento.
+        """
+        query = """
+            SELECT h.dtaoco, h.stapgm, h.motstapgm as tiptrc
+            FROM HISTPROGGR h
+            WHERE h.codpes = :codpes AND (h.stapgm = 'T' OR h.stapgm = 'P')
+            ORDER BY h.dtaoco DESC
+        """
+        result = DB.fetch_all(query, {"codpes": codpes})
+        for row in result:
+            if row["tiptrc"]:
+                row["tiptrc"] = row["tiptrc"].strip()
+        return result
+
+    @staticmethod
     def verifica(codpes: int, codundclgi: int) -> bool:
         """
         Verifica se a pessoa é aluna de graduação ativa na unidade indicada.
@@ -131,6 +253,128 @@ class Graduacao:
         """
         result = DB.fetch(sql, {"codpes": codpes})
         return result if result else {}
+
+    @staticmethod
+    def listar_equivalencias_externas(codpes: int) -> list[dict[str, Any]]:
+        """
+        Lista as disciplinas aproveitadas de outras instituições.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de equivalências externas.
+        """
+        query = """
+            SELECT h.coddis, h.verdis, h.coddisext, h.nominstext, d.creaul, d.cretrb
+            FROM EQUIVEXTERNAGR h
+            INNER JOIN DISCIPLINAGR d ON h.coddis = d.coddis AND h.verdis = d.verdis
+            WHERE h.codpes = :codpes
+            ORDER BY h.dtainiequ ASC
+        """
+        result = DB.fetch_all(query, {"codpes": codpes})
+        for row in result:
+            row["coddis"] = row["coddis"].strip()
+            row["coddisext"] = row["coddisext"].strip()
+            row["nominstext"] = row["nominstext"].strip()
+        return result
+
+    @staticmethod
+    def listar_ministrantes(coddis: str, verdis: int, codtur: str) -> list[dict[str, Any]]:
+        """
+        Retorna os docentes responsáveis por uma turma específica.
+
+        Args:
+            coddis (str): Código da disciplina.
+            verdis (int): Versão da disciplina.
+            codtur (str): Código da turma.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de ministrantes.
+        """
+        query = """
+            SELECT p.codpes, p.nompes, m.dtainiaul, m.dtafimaul
+            FROM MINISTRANTE m
+            INNER JOIN PESSOA p ON m.codpes = p.codpes
+            WHERE m.coddis = :coddis AND m.verdis = :verdis AND m.codtur = :codtur
+        """
+        params = {"coddis": coddis, "verdis": verdis, "codtur": codtur}
+        result = DB.fetch_all(query, params)
+        for row in result:
+            row["nompes"] = row["nompes"].strip()
+        return result
+
+    @staticmethod
+    def obter_horario_turma(coddis: str, verdis: int, codtur: str) -> list[dict[str, Any]]:
+        """
+        Retorna horários e locais de aula de uma turma.
+
+        Args:
+            coddis (str): Código da disciplina.
+            verdis (int): Versão da disciplina.
+            codtur (str): Código da turma.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de horários e locais.
+        """
+        query = """
+            SELECT o.diasmnocp, p.horent, p.horsai, o.codlocusp as codesp
+            FROM OCUPTURMA o
+            INNER JOIN PERIODOHORARIO p ON o.codperhor = p.codperhor
+            WHERE o.coddis = :coddis AND o.verdis = :verdis AND o.codtur = :codtur
+        """
+        params = {"coddis": coddis, "verdis": verdis, "codtur": codtur}
+        result = DB.fetch_all(query, params)
+        for row in result:
+            row["codesp"] = str(row["codesp"]).strip() if row["codesp"] else None
+        return result
+
+    @staticmethod
+    def contar_vagas_turma(coddis: str, verdis: int, codtur: str) -> dict[str, Any]:
+        """
+        Retorna o detalhamento de vagas de uma turma.
+
+        Args:
+            coddis (str): Código da disciplina.
+            verdis (int): Versão da disciplina.
+            codtur (str): Código da turma.
+
+        Returns:
+            Dict[str, Any]: Detalhes das vagas.
+        """
+        query = """
+            SELECT numvagtur, numvagopt, numvagecr, numins, nummtr, numpmtobg
+            FROM TURMAGR
+            WHERE coddis = :coddis AND verdis = :verdis AND codtur = :codtur
+        """
+        params = {"coddis": coddis, "verdis": verdis, "codtur": codtur}
+        result = DB.fetch(query, params)
+        return result if result else {}
+
+    @staticmethod
+    def obter_turma_pratica_vinculada(coddis: str, verdis: int, codtur: str) -> list[dict[str, Any]]:
+        """
+        Associa turmas teóricas às suas práticas vinculadas.
+
+        Args:
+            coddis (str): Código da disciplina teórica.
+            verdis (int): Versão da disciplina teórica.
+            codtur (str): Código da turma teórica.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de turmas práticas vinculadas.
+        """
+        query = """
+            SELECT coddispra, verdispra, codturpra
+            FROM TURPRATICA
+            WHERE coddisteo = :coddis AND verdisteo = :verdis AND codturteo = :codtur
+        """
+        params = {"coddis": coddis, "verdis": verdis, "codtur": codtur}
+        result = DB.fetch_all(query, params)
+        for row in result:
+            row["coddispra"] = row["coddispra"].strip()
+            row["codturpra"] = row["codturpra"].strip()
+        return result
 
     @staticmethod
     def programa(codpes: int) -> dict[str, Any] | None:
@@ -537,21 +781,6 @@ class Graduacao:
             SELECT G.coddis, D.nomdis
             FROM GRADECURRICULAR G
             INNER JOIN DISCIPLINAGR D ON (G.coddis = D.coddis AND G.verdis = D.verdis)
-            WHERE G.codcrl IN (SELECT TOP 1 codcrl
-            FROM CURRICULOGR
-            WHERE codcur = convert(int, :codcur) AND codhab = convert(int, :codhab)
-            AND C.dtafimcrl IS NULL) AND G.tipobg = :tipobg
-        """
-        # Note: The query above is derived from file Graduacao.listarDisciplinasGradeCurricular.sql read earlier
-        # SELECT G.coddis, D.nomdis FROM GRADECURRICULAR G ...
-        # Wait, the inner select alias C was missing in the top query text but present in SQL file snippet probably.
-        # Let's check my cat output from Step 364
-        # SELECT G.codcrl IN (SELECT C.codcrl FROM CURRICULOGR C ...
-        # Yes, alias C is used.
-        query = """
-            SELECT G.coddis, D.nomdis
-            FROM GRADECURRICULAR G
-            INNER JOIN DISCIPLINAGR D ON (G.coddis = D.coddis AND G.verdis = D.verdis)
             WHERE G.codcrl IN (
                 SELECT TOP 1 C.codcrl
                 FROM CURRICULOGR C
@@ -598,6 +827,197 @@ class Graduacao:
             AND I.codpes = convert(int,:codpes)
         """
         return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_requerimentos_aluno(codpes: int) -> list[dict[str, Any]]:
+        """
+        Lista o histórico de requerimentos do aluno.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de requerimentos.
+        """
+        query = """
+            SELECT r.codrqm, r.tiprqm, r.starqm, r.dtacadrqm, r.rstfim
+            FROM REQUERIMENTOGR r
+            WHERE r.codpes = :codpes
+            ORDER BY r.dtacadrqm DESC
+        """
+        result = DB.fetch_all(query, {"codpes": codpes})
+        for row in result:
+            row["tiprqm"] = row["tiprqm"].strip()
+            row["starqm"] = row["starqm"].strip()
+            if row["rstfim"]:
+                row["rstfim"] = row["rstfim"].strip()
+        return result
+
+    @staticmethod
+    def obter_detalhes_requerimento(codrqm: int) -> dict[str, Any]:
+        """
+        Retorna justificativa e parecer de um requerimento específico.
+
+        Args:
+            codrqm (int): Código do requerimento.
+
+        Returns:
+            Dict[str, Any]: Detalhes do requerimento.
+        """
+        query = """
+            SELECT tiprqm, starqm, dtacadrqm, rstfim
+            FROM REQUERIMENTOGR
+            WHERE codrqm = :codrqm
+        """
+        result = DB.fetch(query, {"codrqm": codrqm})
+        if result:
+            if result.get("rstfim"):
+                result["rstfim"] = result["rstfim"].strip()
+        return result if result else {}
+
+    @staticmethod
+    def listar_alunos_especiais(coddis: str, verdis: int, codtur: str) -> list[dict[str, Any]]:
+        """
+        Lista alunos não regulares (especiais) inscritos na turma.
+
+        Args:
+            coddis (str): Código da disciplina.
+            verdis (int): Versão da disciplina.
+            codtur (str): Código da turma.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de alunos especiais.
+        """
+        # Alunos especiais costumam ter registros em HISTESCOLARGR sem vínculo ALUNOGR direto na unidade
+        # ou com tiping específico na tabela de ingresso.
+        query = """
+            SELECT p.codpes, p.nompes, h.rstfim
+            FROM HISTESCOLARGR h
+            INNER JOIN PESSOA p ON h.codpes = p.codpes
+            INNER JOIN PROGRAMAGR pr ON h.codpes = pr.codpes AND h.codpgm = pr.codpgm
+            WHERE h.coddis = :coddis AND h.verdis = :verdis AND h.codtur = :codtur
+            AND pr.tiping = 'Aluno Especial'
+        """
+        params = {"coddis": coddis, "verdis": verdis, "codtur": codtur}
+        result = DB.fetch_all(query, params)
+        for row in result:
+            row["nompes"] = row["nompes"].strip()
+            if row["rstfim"]:
+                row["rstfim"] = row["rstfim"].strip()
+        return result
+
+    @staticmethod
+    def listar_disciplinas_por_prefixo(pfxdis: str) -> list[dict[str, Any]]:
+        """
+        Lista disciplinas filtrando pelo prefixo do departamento.
+
+        Args:
+            pfxdis (str): Prefixo da disciplina (ex: 'MAC', '430').
+
+        Returns:
+            List[Dict[str, Any]]: Lista de disciplinas.
+        """
+        query = """
+            SELECT DISTINCT d.coddis, d.nomdis
+            FROM DISCIPLINAGR d
+            WHERE d.coddis LIKE :pfxdis
+            AND d.verdis = (SELECT MAX(v.verdis) FROM DISCIPLINAGR v WHERE v.coddis = d.coddis)
+        """
+        result = DB.fetch_all(query, {"pfxdis": f"{pfxdis}%"})
+        for row in result:
+            row["coddis"] = row["coddis"].strip()
+            row["nomdis"] = row["nomdis"].strip()
+        return result
+
+    @staticmethod
+    def obter_normas_habilitacao(codcur: int, codhab: int) -> list[dict[str, Any]]:
+        """
+        Retorna as normas de reconhecimento da habilitação.
+
+        Args:
+            codcur (int): Código do curso.
+            codhab (int): Código da habilitação.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de normas.
+        """
+        query = """
+            SELECT tippubnor, dtapubnorgrd, dtafimvalnor, numnorgrd
+            FROM NORMARECONHECHABILGR
+            WHERE codcurgrd = :codcur AND codhab = :codhab
+        """
+        result = DB.fetch_all(query, {"codcur": codcur, "codhab": codhab})
+        for row in result:
+            row["tippubnor"] = row["tippubnor"].strip()
+        return result
+
+    @staticmethod
+    def obter_data_limite_conclusao(codpes: int) -> str | None:
+        """
+        Retorna o prazo máximo para formatura conforme o programa atual.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            Optional[str]: Data limite formatada ou None.
+        """
+        query = """
+            SELECT dtamaxccl FROM PROGRAMAGR
+            WHERE codpes = :codpes AND stapgm IN ('A', 'H', 'R')
+            ORDER BY dtaing DESC
+        """
+        result = DB.fetch(query, {"codpes": codpes})
+        if result and result["dtamaxccl"]:
+            return result["dtamaxccl"].strftime("%d/%m/%Y")
+        return None
+
+    @staticmethod
+    def listar_alunos_por_status_programa(stapgm: str) -> list[dict[str, Any]]:
+        """
+        Lista alunos filtrando pelo status do programa (A, H, T, P, J, C, etc).
+
+        Args:
+            stapgm (str): Status do programa (A=Ativo, T=Trancado, J=Jubilado, etc).
+
+        Returns:
+            List[Dict[str, Any]]: Lista de alunos.
+        """
+        codundclg = os.getenv("REPLICADO_CODUNDCLG")
+        query = f"""
+            SELECT p.codpes, p.nompes, pg.codpgm, pg.stapgm
+            FROM PESSOA p
+            INNER JOIN PROGRAMAGR pg ON p.codpes = pg.codpes
+            INNER JOIN LOCALIZAPESSOA l ON p.codpes = l.codpes
+            WHERE pg.stapgm = :stapgm AND l.codundclg IN ({codundclg})
+            AND l.tipvin = 'ALUNOGR'
+        """
+        result = DB.fetch_all(query, {"stapgm": stapgm})
+        for row in result:
+            row["nompes"] = row["nompes"].strip()
+            row["stapgm"] = row["stapgm"].strip()
+        return result
+
+    @staticmethod
+    def listar_disciplinas_com_vagas_extracurriculares() -> list[dict[str, Any]]:
+        """
+        Lista disciplinas que oferecem vagas para alunos extracurriculares.
+
+        Returns:
+            List[Dict[str, Any]]: Lista de disciplinas com vagas extras.
+        """
+        query = """
+            SELECT d.coddis, d.nomdis, t.codtur, t.numvagecr
+            FROM TURMAGR t
+            INNER JOIN DISCIPLINAGR d ON t.coddis = d.coddis AND t.verdis = d.verdis
+            WHERE t.numvagecr > 0 AND t.statur = 'A'
+        """
+        result = DB.fetch_all(query)
+        for row in result:
+            row["coddis"] = row["coddis"].strip()
+            row["nomdis"] = row["nomdis"].strip()
+            row["codtur"] = row["codtur"].strip()
+        return result
 
     @staticmethod
     def listar_disciplinas_aluno(
