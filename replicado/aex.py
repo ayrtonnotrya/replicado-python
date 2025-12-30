@@ -26,7 +26,7 @@ class AEX:
 
         query = f"""
             SELECT DISTINCT
-                A.codaex, A.veraex, A.titaex, A.sglaex, 
+                A.codaex, A.veraex, A.titaex, A.sglaex,
                 A.cgahoraluaex, A.sitaex
             FROM AEXATIVIDADECURRICULAR A
             INNER JOIN AEXOFERECIMENTO O ON A.codaex = O.codaex AND A.veraex = O.veraex
@@ -62,7 +62,7 @@ class AEX:
             params["veraex"] = veraex
 
         query = f"""
-            SELECT 
+            SELECT
                 I.codpes, P.nompes, I.staactalu, I.rstptpaluaex,
                 I.dtainsaex
             FROM AEXINSCRICAO I

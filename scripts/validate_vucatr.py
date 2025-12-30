@@ -11,7 +11,7 @@ load_dotenv()
 from replicado import CartaoUSP, Pessoa
 
 
-def verify_vucatr():
+def verify_vucatr() -> None:
     # Test codpes (needs to be a real valid codpes for full verification)
     # Using a dummy or trying to find one from existing searches if possible
     # For safe testing without knowing a specific number, we try to fetch a known person or list from DB

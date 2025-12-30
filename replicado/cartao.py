@@ -57,8 +57,8 @@ class CartaoUSP:
             list[dict]: Lista de solicitações ordenadas por data (mais recente primeiro).
         """
         query = """
-            SELECT * FROM CARTAOUSPSOLICITACAO 
-            WHERE codpes = :codpes 
+            SELECT * FROM CARTAOUSPSOLICITACAO
+            WHERE codpes = :codpes
             ORDER BY dtacad DESC
         """
         return DB.fetch_all(query, {"codpes": codpes})

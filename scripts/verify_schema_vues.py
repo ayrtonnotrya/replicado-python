@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from replicado.connection import DB
 
 
-def verify_vues_tables():
+def verify_vues_tables() -> None:
     load_dotenv()
 
     # List of tables from vues___visão_de_replicação_padrão_estrutura.json

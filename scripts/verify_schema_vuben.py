@@ -11,7 +11,7 @@ load_dotenv()
 from replicado.connection import DB
 
 
-def check_table(table_name):
+def check_table(table_name) -> None:
     print(f"--- Checking table: {table_name} ---")
 
     # Check if table exists
@@ -46,11 +46,11 @@ def check_table(table_name):
         print(f"Error listing columns for {table_name}: {e}")
 
 
-def find_new_tables(pattern):
+def find_new_tables(pattern) -> None:
     print(f"\n--- Searching for tables matching '{pattern}' ---")
     query = f"""
-        SELECT name as table_name 
-        FROM sysobjects 
+        SELECT name as table_name
+        FROM sysobjects
         WHERE name LIKE '{pattern}' AND type = 'U'
         ORDER BY name
     """

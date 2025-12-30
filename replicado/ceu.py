@@ -104,15 +104,15 @@ class CEU:
         Útil para portais de divulgação.
         """
         query = """
-            SELECT 
-                C.codcurceu, C.nomcurceu, 
+            SELECT
+                C.codcurceu, C.nomcurceu,
                 E.dtainiins, E.dtafimins, E.dtainiofeedi,
                 E.qtdvagofe
             FROM EDICAOCURSOOFECEU E
             INNER JOIN CURSOCEU C ON E.codcurceu = C.codcurceu
             INNER JOIN EDICAOCURSOCEU EC ON E.codcurceu = EC.codcurceu AND E.codedicurceu = EC.codedicurceu
             WHERE getdate() BETWEEN E.dtainiins AND E.dtafimins
-            AND EC.staedi = 'REG' 
+            AND EC.staedi = 'REG'
             ORDER BY E.dtafimins
         """
         return DB.fetch_all(query)

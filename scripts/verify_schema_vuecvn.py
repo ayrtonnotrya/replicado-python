@@ -11,7 +11,7 @@ load_dotenv()
 from replicado.connection import DB
 
 
-def check_table(table_name):
+def check_table(table_name) -> None:
     print(f"--- Checking table: {table_name} ---")
 
     # Check if table exists

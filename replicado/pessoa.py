@@ -335,8 +335,8 @@ class Pessoa:
             list[dict]: Lista de atividades com título, sigla, status da inscrição e carga horária.
         """
         query = """
-            SELECT 
-                A.codaex, A.veraex, A.titaex, A.sglaex, 
+            SELECT
+                A.codaex, A.veraex, A.titaex, A.sglaex,
                 I.staactalu, I.rstptpaluaex, I.cgahorrlzaex,
                 O.anosemofeaex
             FROM AEXINSCRICAO I
@@ -360,9 +360,9 @@ class Pessoa:
             list[dict]: Lista de cursos com nome, período e status da matrícula.
         """
         query = """
-            SELECT 
-                C.codcurceu, C.nomcurceu, 
-                E.dtainiins, E.dtafimins, 
+            SELECT
+                C.codcurceu, C.nomcurceu,
+                E.dtainiins, E.dtafimins,
                 M.dtainc as data_matricula,
                 M.rstmtrcur as resultado,
                 M.stamtrcurceu as status_matricula

@@ -12,7 +12,7 @@ from replicado import Pessoa
 from replicado.connection import DB
 
 
-def verify_vuceu_pessoa():
+def verify_vuceu_pessoa() -> None:
     print("--- Verifying Pessoa.listar_aex ---")
     try:
         # Find someone with AEX active/completed

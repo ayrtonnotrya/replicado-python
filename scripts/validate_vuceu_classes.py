@@ -10,7 +10,7 @@ from replicado import AEX, CEU
 from replicado.connection import DB
 
 
-def verify_aex_ceu():
+def verify_aex_ceu() -> None:
     print("--- Verifying AEX Class ---")
 
     # 1. List Activities

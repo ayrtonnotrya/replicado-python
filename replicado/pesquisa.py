@@ -114,7 +114,7 @@ class Pesquisa:
         unidades = os.getenv("REPLICADO_CODUNDCLG", "")
 
         query = """
-            SELECT 
+            SELECT
                 vp.codpes,
                 NULL as codprj,
                 vp.nompes AS pesquisador,
@@ -145,7 +145,7 @@ class Pesquisa:
         """
         unidades = os.getenv("REPLICADO_CODUNDCLG", "")
         query = """
-            SELECT 
+            SELECT
                 vp.codpes,
                 vp.nompes as nome_aluno,
                 vp.codpes as codprj, -- Fake ID

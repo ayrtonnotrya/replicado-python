@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from replicado.estrutura import Estrutura
 
 
-def test_estrutura():
+def test_estrutura() -> None:
     load_dotenv()
     print("=== Verificando Módulo Estrutura ===")
 

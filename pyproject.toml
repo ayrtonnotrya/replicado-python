@@ -57,6 +57,7 @@ ignore = ["ANN401", "ANN202"] # Permite typing.Any e helpers internos sem type h
 "tests/manual_test_all.py" = ["ANN", "E501"]
 "replicado/*" = ["E501"] # Permite linhas longas nos módulos por causa das queries SQL legadas
 "replicado/lattes.py" = ["ANN"] # XML parsing complexo com muitos helpers internos
+"scripts/*" = ["ANN", "E402", "E501"] # Scripts de validação são menos estritos
 
 # Permite correções automáticas (safe fixes)
 fixable = ["ALL"]
