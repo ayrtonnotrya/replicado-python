@@ -74,7 +74,9 @@ class Pesquisa:
         query = query.replace("__data__", query_data)
 
         # Log warning about missing tables
-        nlogger.warning("Using fallback query for Iniciação Científica (VINCULOPESSOAUSP)")
+        nlogger.warning(
+            "Using fallback query for Iniciação Científica (VINCULOPESSOAUSP)"
+        )
 
         try:
             results = DB.fetch_all(query)
@@ -88,16 +90,16 @@ class Pesquisa:
             curso = Pessoa.retornar_curso_por_codpes(ic["aluno"])
             ic["codcur"] = curso["codcurgrd"] if curso else None
             ic["nome_curso"] = curso["nomcur"] if curso else None
-            ic["cod_projeto"] = f"IC-{ic['aluno']}" # Fake ID
+            ic["cod_projeto"] = f"IC-{ic['aluno']}"  # Fake ID
             ic["ano_projeto"] = ic["data_ini"].year if ic["data_ini"] else None
-            
+
             # Scholarship logic inferred from tipvin
             if "ICD" in ic["tipo_vinculo"]:
-                 ic["bolsa"] = "true"
-                 ic["codctgedi"] = "BOLSA"
+                ic["bolsa"] = "true"
+                ic["codctgedi"] = "BOLSA"
             else:
-                 ic["bolsa"] = "false"
-                 ic["codctgedi"] = ""
+                ic["bolsa"] = "false"
+                ic["codctgedi"] = ""
 
             iniciacao_cientifica.append(ic)
 
@@ -110,7 +112,7 @@ class Pesquisa:
         Fallback usando VINCULOPESSOAUSP.
         """
         unidades = os.getenv("REPLICADO_CODUNDCLG", "")
-        
+
         query = """
             SELECT 
                 vp.codpes,
@@ -129,8 +131,10 @@ class Pesquisa:
             ORDER BY vp.nompes
         """
         query = query.replace("__unidades__", unidades)
-        
-        nlogger.warning("Using fallback query for Pesquisadores Colaboradores (VINCULOPESSOAUSP)")
+
+        nlogger.warning(
+            "Using fallback query for Pesquisadores Colaboradores (VINCULOPESSOAUSP)"
+        )
         return DB.fetch_all(query)
 
     @staticmethod
@@ -158,9 +162,9 @@ class Pesquisa:
             ORDER BY vp.nompes
         """
         query = query.replace("__codundclgs__", unidades)
-        
+
         nlogger.warning("Using fallback query for Pós-Doutorandos (VINCULOPESSOAUSP)")
-        
+
         try:
             pesquisas = DB.fetch_all(query)
         except Exception:
@@ -168,9 +172,9 @@ class Pesquisa:
 
         for p in pesquisas:
             # Cannot fetch real supervisor without tables, leave None or fake
-            p["supervisor"] = None 
+            p["supervisor"] = None
             # In VINCULOPESSOAUSP, ALUNOPD usually implies some connection, assume valid
-            p["bolsa"] = "false" # Default
+            p["bolsa"] = "false"  # Default
 
         return pesquisas
 
@@ -182,7 +186,7 @@ class Pesquisa:
         unidades = os.getenv("REPLICADO_CODUNDCLG", "")
         # VINCULOPESSOAUSP usually has 'A' (Ativo), 'D' (Desligado), etc.
         # Mapping statuses might be tricky, so we ignore for fallback or assume 'A'
-        
+
         query = """
             SELECT
                 YEAR(vp.dtainivin) AS Ano,
@@ -195,7 +199,7 @@ class Pesquisa:
             ORDER BY YEAR(vp.dtainivin)
         """
         query = query.replace("__codundclg__", unidades)
-        
+
         try:
             results = DB.fetch_all(query)
             return {r["Ano"]: r["qtdProjetosAtivos"] for r in results if r["Ano"]}
@@ -224,7 +228,7 @@ class Pesquisa:
             ORDER BY AnoMes
         """
         query = query.replace("__codundclg__", unidades)
-        
+
         try:
             results = DB.fetch_all(query)
             return {r["AnoMes"]: r["qtdProjetosAtivos"] for r in results}

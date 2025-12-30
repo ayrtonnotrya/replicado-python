@@ -15,14 +15,15 @@ class AEX:
     def listar_atividades(codundclg: int | str = None) -> list[dict[str, Any]]:
         """
         Lista atividades de extensão curricular (CATÁLOGO).
-        
+
         Args:
             codundclg (int/str, optional): Código da unidade/colegiado. Se não informado, usa ENV.
         """
         if not codundclg:
             import os
+
             codundclg = os.getenv("REPLICADO_CODUNDCLG")
-        
+
         query = f"""
             SELECT DISTINCT
                 A.codaex, A.veraex, A.titaex, A.sglaex, 
@@ -55,7 +56,7 @@ class AEX:
         """
         params = {"codaex": codaex}
         ver_filter = ""
-        
+
         if veraex:
             ver_filter = "AND I.veraex = :veraex"
             params["veraex"] = veraex

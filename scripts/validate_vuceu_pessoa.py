@@ -1,6 +1,6 @@
-
 import os
 import sys
+
 from dotenv import load_dotenv
 
 # Add project root to path
@@ -11,6 +11,7 @@ load_dotenv()
 from replicado import Pessoa
 from replicado.connection import DB
 
+
 def verify_vuceu_pessoa():
     print("--- Verifying Pessoa.listar_aex ---")
     try:
@@ -18,7 +19,7 @@ def verify_vuceu_pessoa():
         query = "SELECT TOP 1 codpes FROM AEXINSCRICAO"
         result = DB.fetch(query)
         if result:
-            codpes = int(result['codpes'])
+            codpes = int(result["codpes"])
             print(f"Testing AEX with codpes: {codpes}")
             aex_list = Pessoa.listar_aex(codpes)
             print(f"Found {len(aex_list)} AEX activities.")
@@ -35,7 +36,7 @@ def verify_vuceu_pessoa():
         query = "SELECT TOP 1 codpes FROM MATRICULACURSOCEU"
         result = DB.fetch(query)
         if result:
-            codpes = int(result['codpes'])
+            codpes = int(result["codpes"])
             print(f"Testing CEU Courses with codpes: {codpes}")
             courses = Pessoa.listar_cursos_extensao(codpes)
             print(f"Found {len(courses)} CEU courses.")
@@ -45,6 +46,7 @@ def verify_vuceu_pessoa():
             print("No CEU matriculations found in DB to test.")
     except Exception as e:
         print(f"Error testing CEU Courses: {e}")
+
 
 if __name__ == "__main__":
     verify_vuceu_pessoa()

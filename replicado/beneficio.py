@@ -48,5 +48,7 @@ class Beneficio:
         Retorna a lista de monitores da sala Pró-Aluno.
         FALLBACK: Retorna vazio pois não há como filtrar por sala sem tabelas específicas.
         """
-        nlogger.warning("listar_monitores_pro_aluno: Retornando lista vazia (Tabelas ausentes)")
+        nlogger.warning(
+            "listar_monitores_pro_aluno: Retornando lista vazia (Tabelas ausentes)"
+        )
         return []

@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import Any
 
 from replicado.connection import DB
@@ -18,10 +17,10 @@ class CartaoUSP:
         """
         Verifica se a pessoa possui cartão ativo para acesso (tabela CATR_CRACHA).
         Indica se a catraca liberaria a entrada.
-        
+
         Args:
             codpes (int): Número USP.
-            
+
         Returns:
             bool: True se possui crachá ativo, False caso contrário.
         """
@@ -33,14 +32,16 @@ class CartaoUSP:
     def buscar_cracha_ativo(codpes: int) -> dict[str, Any] | None:
         """
         Retorna os dados do crachá ativo da pessoa, incluindo código do crachá e número do chip.
-        
+
         Args:
             codpes (int): Número USP.
-            
+
         Returns:
             dict | None: Dados do crachá ou None se não tiver.
         """
-        query = "SELECT * FROM CATR_CRACHA WHERE codpescra = :codpes AND sitpescra = 'A'"
+        query = (
+            "SELECT * FROM CATR_CRACHA WHERE codpescra = :codpes AND sitpescra = 'A'"
+        )
         return DB.fetch(query, {"codpes": str(codpes)})
 
     @staticmethod
@@ -48,10 +49,10 @@ class CartaoUSP:
         """
         Lista o histórico de solicitações de cartão USP da pessoa (tabela CARTAOUSPSOLICITACAO).
         Inclui status de pagamento e emissão.
-        
+
         Args:
             codpes (int): Número USP.
-            
+
         Returns:
             list[dict]: Lista de solicitações ordenadas por data (mais recente primeiro).
         """

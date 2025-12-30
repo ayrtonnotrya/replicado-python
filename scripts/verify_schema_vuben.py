@@ -1,6 +1,6 @@
-
 import os
 import sys
+
 from dotenv import load_dotenv
 
 # Add project root to path
@@ -10,19 +10,22 @@ load_dotenv()
 
 from replicado.connection import DB
 
+
 def check_table(table_name):
     print(f"--- Checking table: {table_name} ---")
-    
+
     # Check if table exists
-    check_query = f"SELECT name FROM sysobjects WHERE name = '{table_name}' AND type = 'U'"
+    check_query = (
+        f"SELECT name FROM sysobjects WHERE name = '{table_name}' AND type = 'U'"
+    )
     try:
         exists = DB.fetch_all(check_query)
         if not exists:
             print(f"TABLE NOT FOUND: {table_name}")
             return
     except Exception as e:
-         print(f"Error checking existence of {table_name}: {e}")
-         return
+        print(f"Error checking existence of {table_name}: {e}")
+        return
 
     # Get columns
     query = f"""
@@ -34,13 +37,14 @@ def check_table(table_name):
     """
     try:
         result = DB.fetch_all(query)
-        
+
         print(f"Found {len(result)} columns:")
         for row in result:
             print(f"  - {row.get('column_name')} ({row.get('data_type')})")
-            
+
     except Exception as e:
         print(f"Error listing columns for {table_name}: {e}")
+
 
 def find_new_tables(pattern):
     print(f"\n--- Searching for tables matching '{pattern}' ---")
@@ -62,17 +66,18 @@ def find_new_tables(pattern):
     except Exception as e:
         print(f"Error searching tables: {e}")
 
+
 if __name__ == "__main__":
     tables_to_check = [
         "BENEFICIOALUNO",
         "BENEFICIOALUCONCEDIDO",
         "BENEFICIOPROJETO",
         "AREATEMATICACEU",
-        "AREACONHECIMENTO"
+        "AREACONHECIMENTO",
     ]
 
     for t in tables_to_check:
         check_table(t)
-    
+
     find_new_tables("%BENEFICIO%")
     find_new_tables("%BOLSA%")

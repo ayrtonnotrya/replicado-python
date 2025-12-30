@@ -323,16 +323,14 @@ class Pessoa:
 
         return DB.fetch_all(query)
 
-
-
     @staticmethod
     def listar_aex(codpes: int) -> list[dict[str, Any]]:
         """
         Lista as Atividades de Extensão Curricular (AEX) do aluno.
-        
+
         Args:
             codpes (int): Número USP.
-            
+
         Returns:
             list[dict]: Lista de atividades com título, sigla, status da inscrição e carga horária.
         """
@@ -354,10 +352,10 @@ class Pessoa:
         """
         Lista os cursos de Cultura e Extensão (tradicionais) realizados pela pessoa.
         Utiliza a tabela MATRICULACURSOCEU.
-        
+
         Args:
             codpes (int): Número USP.
-            
+
         Returns:
             list[dict]: Lista de cursos com nome, período e status da matrícula.
         """

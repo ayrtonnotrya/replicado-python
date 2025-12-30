@@ -54,7 +54,9 @@ class Convenio:
                     AND c.dtadtvcvn < GETDATE()
                 ORDER BY c.dtaasicvn
             """
-        nlogger.warning("Using fallback query for Convênios (Sem filtro de unidade via CONVUNIDDESP)")
+        nlogger.warning(
+            "Using fallback query for Convênios (Sem filtro de unidade via CONVUNIDDESP)"
+        )
 
         codundclg = os.getenv("REPLICADO_CODUNDCLG", "")
         query = query.replace("__codundclg__", codundclg)

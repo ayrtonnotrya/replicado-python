@@ -95,7 +95,6 @@ class CEU:
             else:
                 curso["ministrantes"] = ""
 
-
         return cursos
 
     @staticmethod
@@ -119,14 +118,17 @@ class CEU:
         return DB.fetch_all(query)
 
     @staticmethod
-    def detalhes_curso(codcurceu: int, codedicurceu: int = None) -> dict[str, Any] | None:
+    def detalhes_curso(
+        codcurceu: int, codedicurceu: int = None
+    ) -> dict[str, Any] | None:
         """
         Obtém detalhes de um curso específico (ementa, objetivo).
         Se a edição não for passada, pega a mais recente.
         """
         params = {"codcurceu": codcurceu}
         edi_query = "AND E.codedicurceu = :codedicurceu" if codedicurceu else ""
-        if codedicurceu: params["codedicurceu"] = codedicurceu
+        if codedicurceu:
+            params["codedicurceu"] = codedicurceu
 
         query = f"""
             SELECT TOP 1

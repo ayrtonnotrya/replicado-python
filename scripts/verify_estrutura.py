@@ -1,13 +1,13 @@
-
 import os
 import sys
+
 from dotenv import load_dotenv
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from replicado.estrutura import Estrutura
-from replicado.connection import DB
+
 
 def test_estrutura():
     load_dotenv()
@@ -17,17 +17,17 @@ def test_estrutura():
     print("\n1. Listando Unidades...")
     unidades = Estrutura.listar_unidades()
     print(f"Total de unidades encontradas: {len(unidades)}")
-    
+
     if not unidades:
         print("Nenhuma unidade encontrada. Abortando.")
         return
 
     # Pick a random unit or first one (preferable one with data)
-    # Let's try to find 'Faculdade de Filosofia, Letras e Ciências Humanas' or similar broad unit, 
+    # Let's try to find 'Faculdade de Filosofia, Letras e Ciências Humanas' or similar broad unit,
     # or just pick the first valid one.
     target_und = unidades[0]
-    codund = target_und['codund']
-    nomund = target_und['nomund']
+    codund = target_und["codund"]
+    nomund = target_und["nomund"]
     print(f"--> Usando Unidade para Testes: {codund} - {nomund}")
 
     # 2. Dados Fiscais
@@ -36,7 +36,9 @@ def test_estrutura():
     if fiscais:
         print(f"[OK] Dados Fiscais: {fiscais}")
     else:
-        print("[WARN] Dados fiscais não encontrados (pode ser normal para algumas unidades)")
+        print(
+            "[WARN] Dados fiscais não encontrados (pode ser normal para algumas unidades)"
+        )
 
     # 3. Chefias
     print(f"\n3. Listando Chefias (codund={codund})...")
@@ -58,32 +60,32 @@ def test_estrutura():
     print(f"\n5. Listando Departamentos (codund={codund})...")
     depts = Estrutura.listar_departamentos(codund)
     print(f"Total de departamentos encontrados: {len(depts)}")
-    
+
     target_set = None
     if depts:
         for d in depts[:3]:
             print(f"   - {d['nomset']} (Tel: {d['numtelref']})")
         target_set = depts[0]
-    
+
     # 6. Setor (Contato e Servidores)
     if not target_set and len(unidades) > 0:
-         # Fallback: list sectors if no departments
-         setores = Estrutura.listar_setores(codund)
-         if setores:
-             target_set = setores[0]
+        # Fallback: list sectors if no departments
+        setores = Estrutura.listar_setores(codund)
+        if setores:
+            target_set = setores[0]
 
     if target_set:
-        codset = target_set['codset']
-        nomset = target_set['nomset']
+        codset = target_set["codset"]
+        nomset = target_set["nomset"]
         print(f"\n--> Usando Setor para Testes: {codset} - {nomset}")
 
         # Contato
-        print(f"6. Obtendo contato do setor...")
+        print("6. Obtendo contato do setor...")
         contato = Estrutura.obter_contato_setor(codset)
         print(f"   Contato: {contato}")
 
         # Servidores
-        print(f"7. Listando servidores do setor...")
+        print("7. Listando servidores do setor...")
         servidores = Estrutura.listar_servidores_setor(codset)
         print(f"   Total de servidores: {len(servidores)}")
         if servidores:
@@ -91,6 +93,7 @@ def test_estrutura():
                 print(f"   - {s['nompes']} ({s['nomfnc']})")
     else:
         print("\n[WARN] Nenhum setor encontrado para testes detalhados.")
+
 
 if __name__ == "__main__":
     test_estrutura()
