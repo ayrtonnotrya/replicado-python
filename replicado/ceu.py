@@ -95,4 +95,48 @@ class CEU:
             else:
                 curso["ministrantes"] = ""
 
+
         return cursos
+
+    @staticmethod
+    def listar_cursos_ativos() -> list[dict[str, Any]]:
+        """
+        Lista cursos com inscrições abertas no momento (baseado na data atual).
+        Útil para portais de divulgação.
+        """
+        query = """
+            SELECT 
+                C.codcurceu, C.nomcurceu, 
+                E.dtainiins, E.dtafimins, E.dtainiofeedi,
+                E.qtdvagofe
+            FROM EDICAOCURSOOFECEU E
+            INNER JOIN CURSOCEU C ON E.codcurceu = C.codcurceu
+            INNER JOIN EDICAOCURSOCEU EC ON E.codcurceu = EC.codcurceu AND E.codedicurceu = EC.codedicurceu
+            WHERE getdate() BETWEEN E.dtainiins AND E.dtafimins
+            AND EC.staedi = 'REG' 
+            ORDER BY E.dtafimins
+        """
+        return DB.fetch_all(query)
+
+    @staticmethod
+    def detalhes_curso(codcurceu: int, codedicurceu: int = None) -> dict[str, Any] | None:
+        """
+        Obtém detalhes de um curso específico (ementa, objetivo).
+        Se a edição não for passada, pega a mais recente.
+        """
+        params = {"codcurceu": codcurceu}
+        edi_query = "AND E.codedicurceu = :codedicurceu" if codedicurceu else ""
+        if codedicurceu: params["codedicurceu"] = codedicurceu
+
+        query = f"""
+            SELECT TOP 1
+                C.codcurceu, C.nomcurceu, C.objcur, C.juscur,
+                E.codedicurceu, E.dtainiofeedi, E.dtafimofeedi,
+                E.dtainiins, E.dtafimins
+            FROM EDICAOCURSOOFECEU E
+            INNER JOIN CURSOCEU C ON E.codcurceu = C.codcurceu
+            WHERE C.codcurceu = :codcurceu
+            {edi_query}
+            ORDER BY E.dtainiofeedi DESC
+        """
+        return DB.fetch(query, params)

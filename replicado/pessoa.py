@@ -324,38 +324,54 @@ class Pessoa:
         return DB.fetch_all(query)
 
 
+
     @staticmethod
-    def obter_situacao_vacinal(codpes: int) -> dict[str, Any] | None:
+    def listar_aex(codpes: int) -> list[dict[str, Any]]:
         """
-        Retorna a situação vacinal COVID-19 da pessoa.
+        Lista as Atividades de Extensão Curricular (AEX) do aluno.
         
         Args:
             codpes (int): Número USP.
             
         Returns:
-            dict | None: Dicionário com 'sitvcipes' (código) e descrição, ou None se não encontrado.
-            Códigos comuns: 
-            1 = 1ª Dose
-            2 = 2ª Dose
-            R = Reforço
-            N = Não vacinado
-            U = Dose única
-            M = Restrição Médica
+            list[dict]: Lista de atividades com título, sigla, status da inscrição e carga horária.
         """
-        query = "SELECT * FROM PESSOAINFOVACINACOVID WHERE codpes = :codpes"
-        result = DB.fetch(query, {"codpes": codpes})
+        query = """
+            SELECT 
+                A.codaex, A.veraex, A.titaex, A.sglaex, 
+                I.staactalu, I.rstptpaluaex, I.cgahorrlzaex,
+                O.anosemofeaex
+            FROM AEXINSCRICAO I
+            INNER JOIN AEXATIVIDADECURRICULAR A ON I.codaex = A.codaex AND I.veraex = A.veraex
+            INNER JOIN AEXOFERECIMENTO O ON I.codaex = O.codaex AND I.veraex = O.veraex AND I.numseqofeaex = O.numseqofeaex
+            WHERE I.codpes = :codpes
+            ORDER BY O.anosemofeaex DESC
+        """
+        return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_cursos_extensao(codpes: int) -> list[dict[str, Any]]:
+        """
+        Lista os cursos de Cultura e Extensão (tradicionais) realizados pela pessoa.
+        Utiliza a tabela MATRICULACURSOCEU.
         
-        if result:
-            status_map = {
-                '1': '1ª Dose',
-                '2': '2ª Dose (Ciclo Completo Inicial)',
-                'R': 'Dose de Reforço',
-                'U': 'Dose Única',
-                'N': 'Não Vacinado',
-                'M': 'Restrição Médica',
-                'I': 'Invalidado'
-            }
-            # Adiciona descrição humanizada
-            result['descricao'] = status_map.get(result.get('sitvcipes'), 'Desconhecido')
-            return result
-        return None
+        Args:
+            codpes (int): Número USP.
+            
+        Returns:
+            list[dict]: Lista de cursos com nome, período e status da matrícula.
+        """
+        query = """
+            SELECT 
+                C.codcurceu, C.nomcurceu, 
+                E.dtainiins, E.dtafimins, 
+                M.dtainc as data_matricula,
+                M.rstmtrcur as resultado,
+                M.stamtrcurceu as status_matricula
+            FROM MATRICULACURSOCEU M
+            INNER JOIN EDICAOCURSOOFECEU E ON M.codcurceu = E.codcurceu AND M.codedicurceu = E.codedicurceu
+            INNER JOIN CURSOCEU C ON E.codcurceu = C.codcurceu
+            WHERE M.codpes = :codpes
+            ORDER BY E.dtainiins DESC
+        """
+        return DB.fetch_all(query, {"codpes": codpes})

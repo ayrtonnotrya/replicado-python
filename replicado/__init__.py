@@ -1,5 +1,6 @@
 import logging
 
+from .aex import AEX as AEX
 from .bempatrimoniado import Bempatrimoniado as Bempatrimoniado
 from .beneficio import Beneficio as Beneficio
 from .cartao import CartaoUSP as CartaoUSP
