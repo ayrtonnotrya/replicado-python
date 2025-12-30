@@ -2,6 +2,7 @@ import logging
 
 from .bempatrimoniado import Bempatrimoniado as Bempatrimoniado
 from .beneficio import Beneficio as Beneficio
+from .cartao import CartaoUSP as CartaoUSP
 from .ceu import CEU as CEU
 from .convenio import Convenio as Convenio
 from .estrutura import Estrutura as Estrutura

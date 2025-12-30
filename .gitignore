@@ -139,4 +139,5 @@ dmypy.json
 # editors
 .vscode
 .idea
-temp_uspdev_replicado/
+temp/
+

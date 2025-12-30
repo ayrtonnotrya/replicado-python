@@ -323,15 +323,39 @@ class Pessoa:
 
         return DB.fetch_all(query)
 
+
     @staticmethod
-    def retornar_curso_por_codpes(codpes: int) -> dict[str, Any] | None:
+    def obter_situacao_vacinal(codpes: int) -> dict[str, Any] | None:
         """
-        Retorna o código e nome do curso de graduação da pessoa.
+        Retorna a situação vacinal COVID-19 da pessoa.
+        
+        Args:
+            codpes (int): Número USP.
+            
+        Returns:
+            dict | None: Dicionário com 'sitvcipes' (código) e descrição, ou None se não encontrado.
+            Códigos comuns: 
+            1 = 1ª Dose
+            2 = 2ª Dose
+            R = Reforço
+            N = Não vacinado
+            U = Dose única
+            M = Restrição Médica
         """
-        query = """
-            SELECT DISTINCT v.codcurgrd, c.nomcur
-            FROM VINCULOPESSOAUSP v
-            INNER JOIN CURSOGR c ON c.codcur = v.codcurgrd
-            WHERE v.codpes = convert(int, :codpes)
-        """
-        return DB.fetch(query, {"codpes": codpes})
+        query = "SELECT * FROM PESSOAINFOVACINACOVID WHERE codpes = :codpes"
+        result = DB.fetch(query, {"codpes": codpes})
+        
+        if result:
+            status_map = {
+                '1': '1ª Dose',
+                '2': '2ª Dose (Ciclo Completo Inicial)',
+                'R': 'Dose de Reforço',
+                'U': 'Dose Única',
+                'N': 'Não Vacinado',
+                'M': 'Restrição Médica',
+                'I': 'Invalidado'
+            }
+            # Adiciona descrição humanizada
+            result['descricao'] = status_map.get(result.get('sitvcipes'), 'Desconhecido')
+            return result
+        return None
