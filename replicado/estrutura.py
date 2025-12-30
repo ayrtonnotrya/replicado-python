@@ -159,3 +159,91 @@ class Estrutura:
         """
 
         return DB.fetch_all(query, {"partCodlocusp": f"{part_codlocusp}%"})
+
+    @staticmethod
+    def listar_colegiados(codund: int) -> list[dict[str, Any]]:
+        """
+        Retorna lista de órgãos colegiados ativos da unidade (Congregação, Conselhos, etc).
+        """
+        query = """
+            SELECT c.codclg, c.sglclg, c.nomclg, c.tipclg
+            FROM COLEGIADO c
+            INNER JOIN UNIDCOLEG u ON c.codclg = u.codclg AND c.sglclg = u.sglclg
+            WHERE u.codund = CONVERT(int, :codund)
+            AND u.dtafimvinund IS NULL
+            ORDER BY c.nomclg
+        """
+        return DB.fetch_all(query, {"codund": codund})
+
+    @staticmethod
+    def obter_dados_fiscais(codund: int) -> dict[str, Any] | None:
+        """
+        Retorna CNPJ e razão social fiscal da unidade.
+        """
+        query = """
+            SELECT TOP 1 idfcgc, nomundfis
+            FROM UNIDADEFISCAL
+            WHERE codund = CONVERT(int, :codund)
+            AND dtadtv IS NULL
+            ORDER BY dtainival DESC
+        """
+        return DB.fetch(query, {"codund": codund})
+
+    @staticmethod
+    def listar_chefias_unidade(codund: int) -> list[dict[str, Any]]:
+        """
+        Retorna Diretor e Vice-Diretor da Unidade.
+        Baseado na tabela LOCALIZAPESSOA, buscando por funções de confiança.
+        """
+        query = """
+            SELECT l.codpes, l.nompes, l.nomfnc, l.dtainivin, l.codundclg, l.codema
+            FROM LOCALIZAPESSOA l
+            WHERE l.codundclg = CONVERT(int, :codund)
+            AND (l.nomfnc LIKE 'Diretor%' OR l.nomfnc LIKE 'Vice-Diretor%')
+            AND l.sitatl = 'A'
+            AND l.tipvin = 'SERVIDOR'
+            ORDER BY l.nomfnc
+        """
+        return DB.fetch_all(query, {"codund": codund})
+
+    @staticmethod
+    def listar_departamentos(codund: int) -> list[dict[str, Any]]:
+        """
+        Retorna especificamente os setores que são Departamentos de Ensino.
+        """
+        query = """
+            SELECT codset, nomabvset, nomset, codema, numtelref
+            FROM SETOR
+            WHERE codund = CONVERT(int, :codund)
+            AND tipset LIKE 'Departamento de Ensino'
+            AND dtadtvset IS NULL
+            ORDER BY nomset
+        """
+        return DB.fetch_all(query, {"codund": codund})
+
+    @staticmethod
+    def obter_contato_setor(codset: int) -> dict[str, Any] | None:
+        """
+        Retorna e-mail oficial e telefone de referência do setor.
+        """
+        query = """
+            SELECT codset, nomset, codema, numtelref
+            FROM SETOR
+            WHERE codset = CONVERT(int, :codset)
+        """
+        return DB.fetch(query, {"codset": codset})
+
+    @staticmethod
+    def listar_servidores_setor(codset: int) -> list[dict[str, Any]]:
+        """
+        Lista todos os servidores ativos lotados em um setor.
+        """
+        query = """
+            SELECT codpes, nompes, nomfnc, codema, numtelfmt
+            FROM LOCALIZAPESSOA
+            WHERE codset = CONVERT(int, :codset)
+            AND sitatl = 'A'
+            AND tipvin = 'SERVIDOR'
+            ORDER BY nompes
+        """
+        return DB.fetch_all(query, {"codset": codset})
