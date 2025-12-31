@@ -454,9 +454,11 @@ def test_financeiro(ctx, report):
         print(f"Convênios Financeiros {ctx['codundclg']}: {len(Financeiro.listar_convenios_financeiros(ctx['codundclg']))}")
         
     print(f"Bens por Responsável (ctx): {len(Financeiro.listar_bens_por_responsavel(ctx.get('codpes', 0)))}")
+    print(f"Bens por Local (SALA): {len(Financeiro.listar_bens_por_local( Financeiro.buscar_local_usp('SALA')[0]['codlocusp'] if Financeiro.buscar_local_usp('SALA') else 0 ))}")
     print(f"Doações Recebidas {ctx['codundclg']}: {len(Financeiro.listar_doacoes_recebidas(ctx['codundclg']))}")
     print(f"Status Bens {ctx['codundclg']}: {Financeiro.contar_bens_por_status(ctx['codundclg'])}")
     print(f"Buscar Local USP 'SALA': {len(Financeiro.buscar_local_usp('SALA'))}")
+    print(f"Buscar Org CNPJ (Teste): {Financeiro.buscar_organizacao_por_cnpj('00000000000000')}")
     
     report.add("FINANCEIRO", "✅ SUCESSO", 3, f"{len(centros)} centros")
 
@@ -480,6 +482,10 @@ def test_bempatrimoniado(ctx, report):
                 print(f"Detalhar Item {codbem}: {Financeiro.detalhar_item_material(codbem).get('nomgrpitmmat') if Financeiro.detalhar_item_material(codbem) else 'N/A'}")
 
     report.add("BEMPATRIMONIADO", "✅ SUCESSO", 3, f"{len(bens)} listados")
+    
+    # Teste isolado do Dump para um bem (se houver)
+    if bens:
+         print(f"Dump Bem {bens[0]['numpat']}: {'OK' if Bempatrimoniado.dump(bens[0]['numpat']) else 'Falha'}")
 
 
 def test_cartao(ctx, report):
