@@ -373,3 +373,134 @@ class Pessoa:
             ORDER BY E.dtainiins DESC
         """
         return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def obter_nome_social(codpes: int) -> str | None:
+        """
+        Retorna o nome social da pessoa, se houver e estiver autorizado.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            str | None: Nome social ou None.
+        """
+        query = "SELECT nomcnhpes FROM PESSOA WHERE codpes = :codpes AND stautlnomsoc = 'S'"
+        result = DB.fetch(query, {"codpes": codpes})
+        return result["nomcnhpes"] if result else None
+
+    @staticmethod
+    def obter_diversidade(codpes: int) -> dict[str, Any] | None:
+        """
+        Retorna dados de diversidade (raça/cor, identidade de gênero, orientação sexual).
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            dict | None: Dicionário com raca_cor, identidade_genero e orientacao_sexual.
+        """
+        query = """
+            SELECT 
+                R.dscraccor as raca_cor, 
+                I.dscidegen as identidade_genero, 
+                O.dscortsex as orientacao_sexual 
+            FROM COMPLPESSOA C
+            LEFT JOIN RACACOR R ON C.codraccor = R.codraccor
+            LEFT JOIN IDENTIDADEGENERO I ON C.codidegen = I.codidegen
+            LEFT JOIN ORIENTACAOSEXUAL O ON C.codortsex = O.codortsex
+            WHERE C.codpes = :codpes
+        """
+        return DB.fetch(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_titulacoes(codpes: int) -> list[dict[str, Any]]:
+        """
+        Retorna a lista de titulações acadêmicas da pessoa.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            list[dict]: Lista de titulações contendo titpes, dtatitpes, nomittens, etc.
+        """
+        query = "SELECT * FROM TITULOPES WHERE codpes = :codpes ORDER BY dtatitpes DESC"
+        return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_premiacoes(codpes: int) -> list[dict[str, Any]]:
+        """
+        Retorna a lista de premiações recebidas pela pessoa.
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            list[dict]: Lista de premiações contendo nompmopes, dtarcbpmopes, etc.
+        """
+        query = "SELECT * FROM PREMIOPES WHERE codpes = :codpes ORDER BY dtarcbpmopes DESC"
+        return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_professores_seniores(codundclg: int | str | None = None) -> list[dict[str, Any]]:
+        """
+        Lista os professores seniores ativos.
+
+        Args:
+            codundclg (int | str, optional): Código da unidade. Se None, usa REPLICADO_CODUNDCLG.
+
+        Returns:
+            list[dict]: Lista de professores seniores com vínculo ativo.
+        """
+        if not codundclg:
+            codundclg = os.getenv("REPLICADO_CODUNDCLG")
+
+        query = f"""
+            SELECT V.*, P.nompesttd as nompes
+            FROM VINCSATPROFSENIOR V
+            INNER JOIN PESSOA P ON V.codpes = P.codpes
+            WHERE V.codund IN ({codundclg})
+            AND V.dtainicbd <= GETDATE()
+            AND (V.dtafimcbd IS NULL OR V.dtafimcbd >= GETDATE())
+            ORDER BY P.nompesttd
+        """
+        return DB.fetch_all(query)
+
+    @staticmethod
+    def listar_membros_colegiado(codclg: int) -> list[dict[str, Any]]:
+        """
+        Lista os membros de um determinado colegiado.
+
+        Args:
+            codclg (int): Código do colegiado.
+
+        Returns:
+            list[dict]: Lista de membros com nome, sigla e período do mandato.
+        """
+        query = """
+            SELECT P.nompesttd as nompes, C.*
+            FROM PARTICIPANTECOLEG C
+            INNER JOIN PESSOA P ON C.codpes = P.codpes
+            WHERE C.codclg = :codclg
+            AND (C.dtafimmdt IS NULL OR C.dtafimmdt >= GETDATE())
+            ORDER BY P.nompesttd
+        """
+        return DB.fetch_all(query, {"codclg": codclg})
+
+    @staticmethod
+    def obter_dados_servidor_complementar(codpes: int) -> dict[str, Any] | None:
+        """
+        Retorna dados complementares do servidor (PIS, CTPS).
+
+        Args:
+            codpes (int): Número USP.
+
+        Returns:
+            dict | None: Dados com numregpfs (PIS), numdoctrb (CTPS) e serdoctrb (Série).
+        """
+        query = """
+            SELECT numregpfs, numdoctrb, serdoctrb 
+            FROM COMPLPESSOASERV 
+            WHERE codpes = :codpes
+        """
+        return DB.fetch(query, {"codpes": codpes})
