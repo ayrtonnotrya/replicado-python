@@ -28,7 +28,7 @@ class Bempatrimoniado:
         """
         if fields is None:
             fields = ["*"]
-        numpat = numpat.replace(".", "")
+        numpat = str(numpat).replace(".", "")
         columns = ",".join(fields)
 
         # PHP usa CONVERT(decimal, :numpat), aqui vamos passar string mesmo ou int?

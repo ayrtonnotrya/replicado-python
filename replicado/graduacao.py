@@ -266,17 +266,17 @@ class Graduacao:
             List[Dict[str, Any]]: Lista de equivalências externas.
         """
         query = """
-            SELECT h.coddis, h.verdis, h.coddisext, h.nominstext, d.creaul, d.cretrb
+            SELECT h.coddis, h.verdis, r.jusrqm as nominstext, d.creaul, d.cretrb
             FROM EQUIVEXTERNAGR h
             INNER JOIN DISCIPLINAGR d ON h.coddis = d.coddis AND h.verdis = d.verdis
+            INNER JOIN REQUERIMENTOGR r ON h.codrqm = r.codrqm
             WHERE h.codpes = :codpes
-            ORDER BY h.dtainiequ ASC
+            ORDER BY h.coddis ASC
         """
         result = DB.fetch_all(query, {"codpes": codpes})
         for row in result:
             row["coddis"] = row["coddis"].strip()
-            row["coddisext"] = row["coddisext"].strip()
-            row["nominstext"] = row["nominstext"].strip()
+            row["nominstext"] = row["nominstext"].strip() if row["nominstext"] else None
         return result
 
     @staticmethod

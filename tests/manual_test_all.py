@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 sys.path.append(os.getcwd())
 
 from replicado import (
+    AEX,
+    CartaoUSP,
     CEU,
     Bempatrimoniado,
     Beneficio,
@@ -95,13 +97,12 @@ def test_connection(ctx, report):
 
 def test_estrutura(ctx, report):
     print("\n--- TESTE: ESTRUTURA ---")
-    unidades = Estrutura.listar_unidades()
-    detalhes = "Nenhuma unidade"
-    if unidades:
-        u = unidades[0]
-        codund = u["codund"]
+    codund = ctx["codundclg"]
+    u = Estrutura.obter_unidade(codund)
+    
+    if u:
         print(f"Unidade: {u['nomund']} ({codund})")
-        print("Obter unidade:", Estrutura.obter_unidade(codund).get("nomund"))
+        print("Obter unidade:", u.get("nomund"))
         locais = Estrutura.listar_locais_unidade(codund)
         print(f"Locais na unidade {codund}: {len(locais)}")
         detalhes = f"{u['nomund']}, {len(locais)} locais"
@@ -121,6 +122,13 @@ def test_estrutura(ctx, report):
             chefia = Estrutura.get_chefia_setor(codset)
             print(f"Chefia do setor {codset}: {len(chefia)} pessoas")
             detalhes += f", {len(setores)} setores"
+            print(f"Contato do setor {codset}: {Estrutura.obter_contato_setor(codset)}")
+            print(f"Servidores do setor {codset}: {len(Estrutura.listar_servidores_setor(codset))}")
+
+        print(f"Colegiados da unidade: {len(Estrutura.listar_colegiados(ctx['codundclg']))}")
+        print(f"Dados Fiscais (CNPJ): {Estrutura.obter_dados_fiscais(ctx['codundclg']).get('numcnpj')}")
+        print(f"Chefias da unidade: {len(Estrutura.listar_chefias_unidade(ctx['codundclg']))}")
+        print(f"Departamentos da unidade: {len(Estrutura.listar_departamentos(ctx['codundclg']))}")
 
     report.add("ESTRUTURA", "✅ SUCESSO", 1, detalhes)
 
@@ -177,9 +185,17 @@ def test_graduacao(ctx, report):
             f"Média Ponderada (L/S): {Graduacao.obter_media_ponderada_limpa(aluno['codpes'])} / {Graduacao.obter_media_ponderada_suja(aluno['codpes'])}"
         )
         print(f"Grade Horária: {len(Graduacao.obter_grade_horaria(aluno['codpes']))}")
-        print(
-            f"Disciplinas Aluno: {len(Graduacao.listar_disciplinas_aluno(aluno['codpes']))}"
-        )
+        print(f"Disciplinas Aluno: {len(Graduacao.listar_disciplinas_aluno(aluno['codpes']))}")
+        print(f"Notas Ingresso: {len(Graduacao.obter_notas_ingresso(aluno['codpes']))}")
+        print(f"Trancamentos: {len(Graduacao.listar_trancamentos_aluno(aluno['codpes']))}")
+        print(f"Equivalências Externas: {len(Graduacao.listar_equivalencias_externas(aluno['codpes']))}")
+        print(f"Disciplinas Concluídas: {len(Graduacao.disciplinas_concluidas(aluno['codpes'], ctx['codundclg']))}")
+        print(f"Créditos Exterior: {Graduacao.creditos_disciplinas_concluidas_aproveitamento_estudos_exterior(aluno['codpes'], ctx['codundclg'])}")
+        print(f"Requerimentos Aluno: {len(Graduacao.listar_requerimentos_aluno(aluno['codpes']))}")
+
+        if curso_ativo:
+            print(f"Disciplinas Equivalentes Currículo: {len(Graduacao.disciplinas_equivalentes_curriculo(codcur, codhab))}")
+            print(f"Normas Habilitação: {len(Graduacao.obter_normas_habilitacao(codcur, codhab))}")
 
         disciplinas = Graduacao.listar_disciplinas()
         print(f"Disciplinas Unidade: {len(disciplinas)}")
@@ -188,12 +204,17 @@ def test_graduacao(ctx, report):
             print(f"Nome Disciplina {coddis}: {Graduacao.nome_disciplina(coddis)}")
             print(f"Créditos {coddis}: {Graduacao.creditos_disciplina(coddis)}")
 
-        print(
-            f"Cursos/Habilitações: {len(Graduacao.obter_cursos_habilitacoes(ctx['codundclg']))}"
-        )
-        print(
-            f"Departamentos Ensino: {len(Graduacao.listar_departamentos_de_ensino())}"
-        )
+        print(f"Nome Social: {Graduacao.obter_nome_social(aluno['codpes'])}")
+        print(f"Vencimento Identidade: {Graduacao.obter_vencimento_identidade(aluno['codpes'])}")
+        print(f"Vencimento Passaporte: {Graduacao.obter_vencimento_passaporte(aluno['codpes'])}")
+
+        print(f"Códigos Cursos Unidade: {len(Graduacao.obter_codigos_cursos())}")
+        print(f"Disciplinas com Vagas Extras: {len(Graduacao.listar_disciplinas_com_vagas_extracurriculares())}")
+        print(f"Alunos Ativos (Status A): {len(Graduacao.listar_alunos_por_status_programa('A'))}")
+
+        ano_atual = datetime.now().year
+        print(f"Ingressantes {ano_atual}: {len(Graduacao.listar_ingressantes(ano_atual))}")
+
         report.add("GRADUAÇÃO", "✅ SUCESSO", 2, f"{ativos} ativos")
     else:
         report.add("GRADUAÇÃO", "⚠️ AVISO", 2, "Nenhum aluno encontrado")
@@ -221,9 +242,19 @@ def test_posgraduacao(ctx, report):
             print(
                 f"Vínculo Aluno: {Posgraduacao.obter_vinculo_ativo(aluno['codpes']).get('nomcur')}"
             )
+            print(f"Bancas Aluno: {len(Posgraduacao.listar_membros_banca(aluno['codpes']))}")
+            print(f"Qualificações: {len(Posgraduacao.listar_qualificacoes(aluno['codpes']))}")
+            print(f"Coorientações: {len(Posgraduacao.listar_coorientacoes(aluno['codpes']))}")
+            print(f"Trabalho Conclusão: {Posgraduacao.obter_tese_dissertacao(aluno['codpes']).get('tittes') if Posgraduacao.obter_tese_dissertacao(aluno['codpes']) else 'N/A'}")
+            print(f"Atividades Aluno: {len(Posgraduacao.listar_atividades_aluno(aluno['codpes']))}")
+
             print(
                 f"Egressos da área {codare}: {len(Posgraduacao.egressos_area(codare))}"
             )
+            print(f"Disciplinas Oferecimento: {len(Posgraduacao.disciplinas_oferecimento(codare))}")
+            print(f"Catálogo Disciplinas: {len(Posgraduacao.catalogo_disciplinas(codare))}")
+            print(f"Inscrições Área: {len(Posgraduacao.listar_inscricoes_area(codare))}")
+            print(f"Linhas Pesquisa: {len(Posgraduacao.listar_linhas_pesquisa(codare))}")
 
         report.add(
             "PÓS-GRADUAÇÃO", "✅ SUCESSO", 2, f"{ativos} ativos, {len(programas)} progs"
@@ -234,8 +265,22 @@ def test_posgraduacao(ctx, report):
 
 def test_lattes(ctx, report):
     print("\n--- TESTE: LATTES ---")
-    if "codpes" in ctx:
-        codpes = ctx["codpes"]
+    
+    codpes = ctx.get("codpes")
+    
+    # Valida se o codpes atual tem Lattes. Se não, busca um novo especificamente para este teste.
+    if not codpes or not Lattes.id(codpes):
+        print(f"Codpes atual ({codpes}) sem Lattes. Buscando candidato com XML Lattes...")
+        try:
+             # Busca alguém que tenha arquivo XML
+             res = DB.fetch_all("SELECT TOP 1 codpes FROM DIM_PESSOA_XMLUSP WHERE imgarqxml IS NOT NULL")
+             if res:
+                 codpes = res[0]['codpes']
+                 print(f"Novo candidato Lattes selecionado: {codpes}")
+        except Exception as e:
+             print(f"Erro ao buscar candidato Lattes: {e}")
+
+    if codpes:
         id_lattes = Lattes.id(codpes)
         print(f"ID Lattes para {codpes}: {id_lattes}")
         print(f"Data Atualização: {Lattes.retornar_data_ultima_atualizacao(codpes)}")
@@ -246,9 +291,19 @@ def test_lattes(ctx, report):
         def safe_len(data):
             return len(data) if isinstance(data, list) else 0
 
-        print(f"Artigos: {safe_len(Lattes.listar_artigos(codpes))}")
-        print(f"Livros: {safe_len(Lattes.listar_livros_publicados(codpes))}")
-        print(f"Prêmios: {safe_len(Lattes.listar_premios(codpes))}")
+        print(f"Artigos/Qualis: {safe_len(Lattes.listar_artigos_com_qualis(codpes))}")
+        print(f"Capítulos: {safe_len(Lattes.listar_capitulos_livros(codpes))}")
+        print(f"Trabalhos Anais: {safe_len(Lattes.listar_trabalhos_anais(codpes))}")
+        print(f"Trabalhos Técnicos: {safe_len(Lattes.listar_trabalhos_tecnicos(codpes))}")
+        print(f"Apresentação Trabalho: {safe_len(Lattes.listar_apresentacao_trabalho(codpes))}")
+        print(f"Organização Evento: {safe_len(Lattes.listar_organizacao_evento(codpes))}")
+        print(f"Banca Mestrado: {safe_len(Lattes.retornar_banca_mestrado(codpes))}")
+        print(f"Banca Doutorado: {safe_len(Lattes.retornar_banca_doutorado(codpes))}")
+        print(f"Métricas Citação: {Lattes.obter_metricas_citacao(codpes)}")
+        print(f"Citações Anual: {safe_len(Lattes.listar_citacoes_anual(codpes))}")
+        print(f"Projetos Pesquisa: {len(Lattes.listar_projetos_pesquisa(codpes))}")
+        print(f"Áreas Conhecimento: {len(Lattes.listar_areas_conhecimento(codpes))}")
+        print(f"Gênero Lattes: {Lattes.retornar_genero_pesquisador(codpes)}")
         print(f"Linhas Pesquisa: {safe_len(Lattes.listar_linhas_pesquisa(codpes))}")
 
         report.add("LATTES", "✅ SUCESSO", 2, f"ID: {id_lattes}")
@@ -265,11 +320,58 @@ def test_pesquisa(ctx, report):
     pd = Pesquisa.listar_pesquisa_pos_doutorandos()
     print(f"Pós-doutorandos: {len(pd)}")
     print(f"Contagem PD por ano: {Pesquisa.contar_pd_por_ano()}")
+    print(f"Contagem PD últimos 12 meses: {Pesquisa.contar_pd_por_ultimos_12_meses()}")
     report.add("PESQUISA", "✅ SUCESSO", 2, f"{len(ic)} ICs, {len(pd)} PDs")
 
 
 def test_pessoa_full(ctx, report):
     print("\n--- TESTE: PESSOA (FULL) ---")
+    
+    # Lógica de seleção com Retry e Heurística de Qualidade
+    if "codpes" not in ctx:
+        print("Selecionando pessoa para testes (Priorizando quem tem Lattes XML)...")
+        # Busca candidatos que tenham XML do Lattes
+        query_candidates = """
+            SELECT TOP 30 L.codpes 
+            FROM LOCALIZAPESSOA L
+            INNER JOIN DIM_PESSOA_XMLUSP X ON L.codpes = X.codpes
+            WHERE L.sitatl='A' 
+            AND X.imgarqxml IS NOT NULL
+        """
+        try:
+             candidates = DB.fetch_all(query_candidates)
+        except Exception:
+             # Fallback se a query falhar (ex: tabela DIM não acessível)
+             candidates = DB.fetch_all("SELECT TOP 30 codpes FROM LOCALIZAPESSOA WHERE sitatl='A'")
+
+
+        selected_codpes = None
+        attempts = 0
+        max_attempts = 3
+        
+        for cand in candidates:
+            if attempts >= max_attempts:
+                break
+                
+            c = cand['codpes']
+            # Heurística: Tem Lattes? (Indica perfil acadêmico mais rico para testes)
+            if Lattes.id(c):
+                selected_codpes = c
+                print(f"DEBUG: Candidato {c} possui Lattes. Selecionado.")
+                break
+            else:
+                # Se não tem Lattes, usamos como fallback se não acharmos ninguém melhor
+                if selected_codpes is None:
+                    selected_codpes = c
+            
+            attempts += 1
+            
+        if selected_codpes:
+            ctx['codpes'] = selected_codpes
+            print(f"Pessoa selecionada: {selected_codpes}")
+        else:
+            print("AVISO: Nenhuma pessoa ativa encontrada.")
+
     if "codpes" in ctx:
         codpes = ctx["codpes"]
         print(f"Testando FULL para {codpes}")
@@ -292,6 +394,19 @@ def test_pessoa_full(ctx, report):
                 f"Procurar por nome '{nome[:10]}': {len(Pessoa.procurar_por_nome(nome[:10]))}"
             )
 
+        print(f"Obter nome: {Pessoa.obter_nome(codpes)}")
+        print(f"Diversidade: {Pessoa.obter_diversidade(codpes)}")
+        print(f"Total Alunos Grad Ativos Unidade: {Pessoa.total_vinculo('ALUNOGR', ctx['codundclg'])}")
+        print(f"Designados: {len(Pessoa.listar_designados())}")
+        print(f"AEX: {len(Pessoa.listar_aex(codpes))}")
+        print(f"Cursos Extensão: {len(Pessoa.listar_cursos_extensao(codpes))}")
+        print(f"Nome Social: {Pessoa.obter_nome_social(codpes)}")
+        print(f"Titulações: {len(Pessoa.listar_titulacoes(codpes))}")
+        print(f"Premiações: {len(Pessoa.listar_premiacoes(codpes))}")
+        print(f"Professores Seniores: {len(Pessoa.listar_professores_seniores(ctx['codundclg']))}")
+        print(f"Membros Colegiado 1 (exemplo): {len(Pessoa.listar_membros_colegiado(1))}")
+        print(f"Dados Complementares: {Pessoa.obter_dados_servidor_complementar(codpes)}")
+
         report.add("PESSOA_FULL", "✅ SUCESSO", 2, f"{len(servidores)} serv totais")
     else:
         report.add("PESSOA_FULL", "⚠️ AVISO", 2, "Sem codpes")
@@ -301,6 +416,7 @@ def test_beneficio(ctx, report):
     print("\n--- TESTE: BENEFÍCIO ---")
     beneficios = Beneficio.listar_beneficios()
     print(f"Benefícios ativos: {len(beneficios)}")
+    print(f"Monitores Pró-Aluno: {len(Beneficio.listar_monitores_pro_aluno('1'))}")
     report.add("BENEFÍCIO", "✅ SUCESSO", 3, f"{len(beneficios)} ativos")
 
 
@@ -308,6 +424,10 @@ def test_ceu(ctx, report):
     print("\n--- TESTE: CEU ---")
     cursos = CEU.listar_cursos()
     print(f"Cursos CEU (ano atual): {len(cursos)}")
+    print(f"Cursos Ativos (Inscrições): {len(CEU.listar_cursos_ativos())}")
+    if cursos:
+        c = cursos[0]
+        print(f"Detalhes Curso {c['codcurceu']}: {CEU.detalhes_curso(c['codcurceu'], c['codedicurceu']).get('nomcurceu')}")
     report.add("CEU", "✅ SUCESSO", 3, f"{len(cursos)} cursos")
 
 
@@ -315,6 +435,10 @@ def test_convenio(ctx, report):
     print("\n--- TESTE: CONVÊNIO ---")
     convenios = Convenio.listar_convenios_academicos_internacionais()
     print(f"Convênios Internacionais Ativos: {len(convenios)}")
+    if convenios:
+        cv = convenios[0]
+        print(f"Coordenadores Convênio {cv['codcvn']}: {len(Convenio.listar_coordenadores_convenio(cv['codcvn']))}")
+        print(f"Organizações Convênio {cv['codcvn']}: {len(Convenio.listar_organizacoes_convenio(cv['codcvn']))}")
     report.add("CONVÊNIO", "✅ SUCESSO", 3, f"{len(convenios)} ativos")
 
 
@@ -322,14 +446,64 @@ def test_financeiro(ctx, report):
     print("\n--- TESTE: FINANCEIRO ---")
     centros = Financeiro.listar_centros_despesas()
     print(f"Centros de Despesas: {len(centros)}")
+    if centros:
+        codunddsp = centros[0]["codunddsp"]
+        print(f"Estoque Unidade {codunddsp}: {len(Financeiro.listar_estoque_unidade(codunddsp))}")
+        print(f"Sugestão Reposição {codunddsp}: {len(Financeiro.sugerir_reposicao(codunddsp))}")
+        print(f"Hierarquia Financeira {codunddsp}: {len(Financeiro.obter_hierarquia_financeira(codunddsp))}")
+        print(f"Convênios Financeiros {ctx['codundclg']}: {len(Financeiro.listar_convenios_financeiros(ctx['codundclg']))}")
+        
+    print(f"Bens por Responsável (ctx): {len(Financeiro.listar_bens_por_responsavel(ctx.get('codpes', 0)))}")
+    print(f"Doações Recebidas {ctx['codundclg']}: {len(Financeiro.listar_doacoes_recebidas(ctx['codundclg']))}")
+    print(f"Status Bens {ctx['codundclg']}: {Financeiro.contar_bens_por_status(ctx['codundclg'])}")
+    print(f"Buscar Local USP 'SALA': {len(Financeiro.buscar_local_usp('SALA'))}")
+    
     report.add("FINANCEIRO", "✅ SUCESSO", 3, f"{len(centros)} centros")
 
 
 def test_bempatrimoniado(ctx, report):
     print("\n--- TESTE: BEMPATRIMONIADO ---")
-    bens = Bempatrimoniado.ativos(limite=10)
+    bens = Bempatrimoniado.ativos(limite=5)
     print(f"Exemplos de bens: {len(bens)}")
+    if bens:
+        numpat = bens[0]["numpat"]
+        print(f"Verifica Bem {numpat}: {Bempatrimoniado.verifica(numpat)}")
+        print(f"É Informática {numpat}: {Bempatrimoniado.is_informatica(numpat)}")
+        
+        detalhes = Financeiro.obter_detalhes_bem(numpat)
+        if detalhes:
+            print(f"Detalhes Bem Financeiro: {detalhes.get('tipbem')}")
+            codbem = detalhes.get('codbem')
+            if codbem:
+                print(f"Preço Médio Bem {codbem}: {Financeiro.obter_preco_medio(codbem)}")
+                print(f"Atributos Material {codbem}: {len(Financeiro.listar_atributos_material(codbem))}")
+                print(f"Detalhar Item {codbem}: {Financeiro.detalhar_item_material(codbem).get('nomgrpitmmat') if Financeiro.detalhar_item_material(codbem) else 'N/A'}")
+
     report.add("BEMPATRIMONIADO", "✅ SUCESSO", 3, f"{len(bens)} listados")
+
+
+def test_cartao(ctx, report):
+    print("\n--- TESTE: CARTÃO USP ---")
+    if "codpes" in ctx:
+        codpes = ctx["codpes"]
+        print(f"Verificar Acesso {codpes}: {CartaoUSP.verificar_acesso(codpes)}")
+        print(f"Crachá Ativo {codpes}: {bool(CartaoUSP.buscar_cracha_ativo(codpes))}")
+        print(f"Solicitações {codpes}: {len(CartaoUSP.listar_solicitacoes(codpes))}")
+    report.add("CARTÃO USP", "✅ SUCESSO", 3, "Validado")
+
+
+def test_aex(ctx, report):
+    print("\n--- TESTE: AEX ---")
+    atividades = AEX.listar_atividades()
+    print(f"Catálogo AEX Unidade: {len(atividades)}")
+    if atividades:
+        a = atividades[0]
+        print(f"Busca por Código {a['codaex']}: {AEX.buscar_por_codigo(a['codaex']).get('titaex')}")
+        print(f"Inscritos na Atividade: {len(AEX.listar_inscritos(a['codaex'], a['veraex']))}")
+    report.add("AEX", "✅ SUCESSO", 3, f"{len(atividades)} atividades")
+
+
+
 
 
 # --- EXECUTOR PRINCIPAL ---
@@ -366,36 +540,38 @@ def run_tests():
             int(codundclg_env.split(",")[0])
             if "," in codundclg_env
             else int(codundclg_env)
-        )
+        ),
+        "level": level,
     }
     report = TestReport()
 
     # Mapeamento de testes por nível
-    # (Nome, Nível Mínimo, Função)
+    # Mapeamento de testes por nível
+    # (Nome, Função) - Todos rodam, a função decide a profundidade baseada em ctx['level']
     test_list = [
-        ("UTILS", 1, test_utils),
-        ("CONEXÃO", 1, test_connection),
-        ("ESTRUTURA", 1, test_estrutura),
-        ("PESSOA_BASIC", 1, test_pessoa_basic),
-        ("GRADUAÇÃO", 2, test_graduacao),
-        ("PÓS-GRADUAÇÃO", 2, test_posgraduacao),
-        ("LATTES", 2, test_lattes),
-        ("PESQUISA", 2, test_pesquisa),
-        ("PESSOA_FULL", 2, test_pessoa_full),
-        ("BENEFÍCIO", 3, test_beneficio),
-        ("CEU", 3, test_ceu),
-        ("CONVÊNIO", 3, test_convenio),
-        ("FINANCEIRO", 3, test_financeiro),
-        ("BEMPATRIMONIADO", 3, test_bempatrimoniado),
+        ("UTILS", test_utils),
+        ("CONEXÃO", test_connection),
+        ("ESTRUTURA", test_estrutura),
+        ("PESSOA", test_pessoa_full), # Unificando testes de pessoal
+        ("GRADUAÇÃO", test_graduacao),
+        ("PÓS-GRADUAÇÃO", test_posgraduacao),
+        ("LATTES", test_lattes),
+        ("PESQUISA", test_pesquisa),
+        ("BENEFÍCIO", test_beneficio),
+        ("CEU", test_ceu),
+        ("CONVÊNIO", test_convenio),
+        ("FINANCEIRO", test_financeiro),
+        ("BEMPATRIMONIADO", test_bempatrimoniado),
+        ("CARTÃO USP", test_cartao),
+        ("AEX", test_aex),
     ]
 
-    for name, min_level, func in test_list:
-        if level >= min_level:
-            try:
-                func(ctx, report)
-            except Exception as e:
-                print(f"❌ FALHA EM {name}: {e}")
-                report.add(name, "❌ ERRO", min_level, str(e))
+    for name, func in test_list:
+        try:
+            func(ctx, report)
+        except Exception as e:
+            print(f"❌ FALHA EM {name}: {e}")
+            report.add(name, "❌ ERRO", level, str(e))
 
     report.print_summary(level)
     print("\n=== FIM DOS TESTES ===")

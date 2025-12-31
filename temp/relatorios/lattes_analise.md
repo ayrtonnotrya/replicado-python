@@ -57,3 +57,17 @@ Dada a riqueza de informações contidas no XML do Lattes e a existência de tab
 
 ### Observações sobre Proporcionalidade
 Embora o módulo `lattes` dependa fortemente do XML, a inclusão de métodos baseados em tabelas relacionais (`vuprod`, `vupesq`) permite que os sistemas USP consultem dados agregados e métricas de impacto sem a necessidade de reprocessar o XML em cada requisição, aumentando significativamente a performance e utilidade do pacote.
+
+---
+
+## Impacto na Implementação (Atualização 31/12/2025)
+
+Após investigação aprofundada e implementação, conclui-se que:
+
+1.  **Adoção do XML como Fonte Única**: Devido à ausência total das tabelas `CITACAOPESSOA`, `ACIPROJETO` e `PDPROJETO`, a refatoração priorizou a extração de dados diretamente do XML (`DIM_PESSOA_XMLUSP`), utilizando um cache em memória (TTL 1h) para mitigar problemas de performance.
+2.  **Impossibilidade de Histórico Detalhado**:
+    *   A tabela `CITACAOPESSOAANUAL` (prevista na visão) forneceria o histórico de citações ano a ano.
+    *   Como ela não existe, tentou-se extrair essa informação do XML.
+    *   **Limitação**: O XML padrão do Lattes (CNPq) contido na réplica *não possui* dados estruturados de citações por ano, apenas um resumo em texto ou totais gerais em atributos específicos (quando preenchidos manualmente).
+    *   **Consequência**: O método `listar_citacoes_anual` foi mantido para compatibilidade, mas retorna uma lista vazia, pois a informação não existe na fonte de dados disponível.
+3.  **Ação Recomendada**: Comunicar aos responsáveis pela replicação a necessidade de disponibilizar as tabelas de métricas (`CITACAOPESSOA*`) ou integrar uma fonte externa (ex: Scopus API), já que o XML sozinho é insuficiente para análises bibliométricas temporais.

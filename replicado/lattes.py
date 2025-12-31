@@ -1410,73 +1410,151 @@ class Lattes:
         return artigos
 
     @staticmethod
-    def obter_metricas_citacao(codpes: int) -> dict[str, Any] | bool:
+    def obter_metricas_citacao(
+        codpes: int, lattes_array: dict[str, Any] | None = None
+    ) -> dict[str, Any] | bool:
         """
-        Retorna métricas de citação (índice H, etc) da tabela CITACAOPESSOA.
+        Retorna métricas de citação (índice H, etc) extraídas do XML do Lattes.
         """
-        query = "SELECT * FROM CITACAOPESSOA WHERE codpes = :codpes"
-        try:
-            return DB.fetch(query, {"codpes": codpes})
-        except Exception as e:
-            logger.error(f"Erro ao obter métricas de citação: {e}")
+        lattes = lattes_array if lattes_array else Lattes.obter_array(codpes)
+        if not lattes:
             return False
+
+        # As métricas de citação no XML do Lattes (formato CNPq) geralmente ficam em:
+        # CITACOES (podem haver múltiplas entradas para ISI, SCOPUS, SCIELO)
+        citacoes_node = lattes.get("CITACOES", [])
+        if isinstance(citacoes_node, dict):
+            citacoes_node = [citacoes_node]
+
+        metrics = {
+             "qtdcitpes": 0, # Total estimado
+             "clsinh": 0,    # Maior H-Index encontrado
+        }
+        
+        found = False
+        for c in citacoes_node:
+             attrs = c.get("@attributes", {})
+             if not attrs:
+                 continue
+             
+             # Exemplo de atributos: 'TOTAL-CITACOES', 'TOTAL-DE-TRABALHOS', 'INDICE-H'
+             try:
+                 total = int(attrs.get("TOTAL-CITACOES", 0))
+                 h_index = int(attrs.get("INDICE-H", 0))
+                 
+                 metrics["qtdcitpes"] = max(metrics["qtdcitpes"], total)
+                 metrics["clsinh"] = max(metrics["clsinh"], h_index)
+                 found = True
+             except Exception:
+                 pass
+        
+        if found:
+            return metrics
+            
+        return False
 
     @staticmethod
     def listar_citacoes_anual(codpes: int) -> list[dict[str, Any]] | bool:
         """
-        Retorna histórico anual de citações da tabela CITACAOPESSOAANUAL.
+        Retorna histórico anual de citações.
+        NOTA: O XML do Lattes padrão NÃO contém histórico ano a ano estruturado, 
+        apenas totais. Retornará lista vazia para evitar erros, já que a tabela
+        CITACAOPESSOAANUAL não existe.
         """
-        query = "SELECT * FROM CITACAOPESSOAANUAL WHERE codpes = :codpes ORDER BY anoref DESC"
-        try:
-            return DB.fetch_all(query, {"codpes": codpes})
-        except Exception as e:
-            logger.error(f"Erro ao listar citações anuais: {e}")
-            return False
+        # Como o XML não tem essa informação detalhada por ano (somente totais), 
+        # e a tabela auxiliar não existe, retornamos falso/vazio.
+        return []
 
     @staticmethod
-    def listar_projetos_pesquisa(codpes: int) -> list[dict[str, Any]]:
+    def listar_projetos_pesquisa(
+        codpes: int, lattes_array: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """
-        Lista projetos de pesquisa de diversas fontes (ACIPROJETO, PDPROJETO).
+        Lista projetos de pesquisa extraídos do XML do Lattes.
+        Caminho: DADOS-GERAIS -> ATUACOES-PROFISSIONAIS -> ATUACAO-PROFISSIONAL ->
+                 ATIVIDADES-DE-PARTICIPACAO-EM-PROJETO -> PROJETO-DE-PESQUISA
         """
+        lattes = lattes_array if lattes_array else Lattes.obter_array(codpes)
+        if not lattes:
+             return []
+
         projetos = []
-        # Tenta ACIPROJETO
-        query_aci = """
-            SELECT p.codprj, p.titprjaco as titulo, p.anoprj as ano, 'Pesquisa' as tipo
-            FROM ACIPROJETO p
-            INNER JOIN ACIPARTICIPANTE part ON p.codprj = part.codprj
-            WHERE part.codpes = :codpes
-        """
-        try:
-            projetos.extend(DB.fetch_all(query_aci, {"codpes": codpes}))
-        except Exception as e:
-            logger.warning(f"Erro ao buscar ACIPROJETO: {e}")
-
-        # Tenta PDPROJETO
-        query_pd = """
-            SELECT p.codprj, p.titprj as titulo, p.anoprj as ano, 'Pós-Doutorado' as tipo
-            FROM PDPROJETO p
-            WHERE p.codpes = :codpes
-        """
-        try:
-            projetos.extend(DB.fetch_all(query_pd, {"codpes": codpes}))
-        except Exception as e:
-            logger.warning(f"Erro ao buscar PDPROJETO: {e}")
-
+        atuacoes = get_path(
+             lattes, "DADOS-GERAIS.ATUACOES-PROFISSIONAIS.ATUACAO-PROFISSIONAL"
+        )
+        if not atuacoes:
+             return []
+             
+        if not isinstance(atuacoes, list):
+             atuacoes = [atuacoes]
+             
+        for atuacao in atuacoes:
+             # Pode haver várias atividades de participação
+             participacoes = get_path(atuacao, "ATIVIDADES-DE-PARTICIPACAO-EM-PROJETO.PROJETO-DE-PESQUISA")
+             if not participacoes:
+                 continue
+                 
+             if not isinstance(participacoes, list):
+                 participacoes = [participacoes]
+                 
+             for proj in participacoes:
+                 # Atributos básicos ficam em @attributes do nó PROJETO-DE-PESQUISA
+                 attrs = proj.get("@attributes", {})
+                 
+                 # Participantes (Equipe)
+                 equipe_node = proj.get("EQUIPE-DO-PROJETO", [])
+                 if not isinstance(equipe_node, list):
+                     equipe_node = [equipe_node]
+                 
+                 integrantes = []
+                 for eq in equipe_node:
+                      for integrante in eq.get("INTEGRANTES-DO-PROJETO", []):
+                           if isinstance(integrante, dict): # Check safety
+                                int_attrs = integrante.get("@attributes", {})
+                                integrantes.append(int_attrs.get("NOME-COMPLETO", ""))
+                 
+                 projetos.append({
+                     "ano_inicio": attrs.get("ANO-INICIO"),
+                     "ano_fim": attrs.get("ANO-FIM"),
+                     "nome_projeto": attrs.get("NOME-DO-PROJETO"),
+                     "descricao": attrs.get("DESCRICAO-DO-PROJETO"),
+                     "situacao": attrs.get("SITUACAO"),
+                     "natureza": attrs.get("NATUREZA"),
+                     "integrantes": integrantes
+                 })
+                 
         return projetos
 
     @staticmethod
-    def obter_detalhes_pos_doutorado(codpes: int) -> dict[str, Any] | bool:
+    def obter_detalhes_pos_doutorado(
+        codpes: int, lattes_array: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]] | bool:
         """
-        Retorna detalhes do projeto de pós-doutorado.
+        Retorna detalhes de pós-doutorado extraídos da Formação Acadêmica do Lattes.
         """
-        query = (
-            "SELECT TOP 1 * FROM PDPROJETO WHERE codpes = :codpes ORDER BY anoprj DESC"
-        )
-        try:
-            return DB.fetch(query, {"codpes": codpes})
-        except Exception as e:
-            logger.error(f"Erro ao obter detalhes de PD: {e}")
+        lattes = lattes_array if lattes_array else Lattes.obter_array(codpes)
+        if not lattes:
             return False
+            
+        formacao = get_path(lattes, "DADOS-GERAIS.FORMACAO-ACADEMICA-TITULACAO.POS-DOUTORADO")
+        if not formacao:
+             return False
+             
+        if not isinstance(formacao, list):
+             formacao = [formacao]
+             
+        pds = []
+        for pd in formacao:
+             attrs = pd.get("@attributes", {})
+             pds.append({
+                 "ano_inicio": attrs.get("ANO-DE-INICIO"),
+                 "ano_conclusao": attrs.get("ANO-DE-CONCLUSAO"),
+                 "instituicao": attrs.get("NOME-INSTITUICAO"),
+                 "status": attrs.get("STATUS-DO-CURSO"),
+                 "agencia_fomento": attrs.get("NOME-AGENCIA"), 
+             })
+             
+        return pds
 
     @staticmethod
     def listar_areas_conhecimento(codpes: int) -> list[str]:
