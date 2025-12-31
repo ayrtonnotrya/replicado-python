@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -13,6 +14,9 @@ class Lattes:
     """
     Classe para métodos relacionados ao currículo Lattes.
     """
+
+    _cache: dict[int, tuple[float, dict]] = {}
+    _TTL: int = 3600
 
     @staticmethod
     def id(codpes: int) -> str | bool:
@@ -120,10 +124,22 @@ class Lattes:
     def obter_array(codpes: int) -> dict[str, Any] | bool:
         """
         Recebe o número USP e devolve array (dict) do lattes.
+        Usa cache em memória com TTL de 1 hora.
         """
+        agora = time.time()
+        if codpes in Lattes._cache:
+            expira, dados = Lattes._cache[codpes]
+            if agora < expira:
+                logger.debug(f"Cache HIT para Lattes de {codpes}")
+                return dados
+            else:
+                logger.debug(f"Cache expirado para Lattes de {codpes}")
+
         json_content = Lattes.obter_json(codpes)
         if json_content:
-            return json.loads(json_content)
+            dados = json.loads(json_content)
+            Lattes._cache[codpes] = (agora + Lattes._TTL, dados)
+            return dados
         return False
 
     @staticmethod
@@ -1358,3 +1374,142 @@ class Lattes:
                     res += f"\n{candidato}"
                 nome_bancas.append(res)
         return nome_bancas if nome_bancas else False
+
+    @staticmethod
+    def listar_artigos_com_qualis(codpes: int) -> list[dict[str, Any]] | bool:
+        """
+        Lista artigos e tenta enriquecer com o estrato Qualis.
+        """
+        artigos = Lattes.listar_artigos(codpes)
+        if not artigos:
+            return False
+
+        # Busca todos os Qualis para agilizar (ou buscar por ISSN específico)
+        issns = [f"'{a['ISSN'].replace('-', '')}'" for a in artigos if a.get("ISSN")]
+        if not issns:
+            return artigos
+
+        issns_str = ",".join(set(issns))
+        query = f"""
+            SELECT numisnprd, clsqliprd
+            FROM QUALISPERIODICO
+            WHERE numisnprd IN ({issns_str})
+        """
+        try:
+            qualis_results = DB.fetch_all(query)
+            qualis_map = {r["numisnprd"]: r["clsqliprd"] for r in qualis_results}
+
+            for art in artigos:
+                issn_limpo = art.get("ISSN", "").replace("-", "")
+                art["QUALIS"] = qualis_map.get(issn_limpo, "N/A")
+        except Exception as e:
+            logger.warning(f"Não foi possível recuperar Qualis: {e}")
+            for art in artigos:
+                art["QUALIS"] = "FALHA_DB"
+
+        return artigos
+
+    @staticmethod
+    def obter_metricas_citacao(codpes: int) -> dict[str, Any] | bool:
+        """
+        Retorna métricas de citação (índice H, etc) da tabela CITACAOPESSOA.
+        """
+        query = "SELECT * FROM CITACAOPESSOA WHERE codpes = :codpes"
+        try:
+            return DB.fetch(query, {"codpes": codpes})
+        except Exception as e:
+            logger.error(f"Erro ao obter métricas de citação: {e}")
+            return False
+
+    @staticmethod
+    def listar_citacoes_anual(codpes: int) -> list[dict[str, Any]] | bool:
+        """
+        Retorna histórico anual de citações da tabela CITACAOPESSOAANUAL.
+        """
+        query = "SELECT * FROM CITACAOPESSOAANUAL WHERE codpes = :codpes ORDER BY anoref DESC"
+        try:
+            return DB.fetch_all(query, {"codpes": codpes})
+        except Exception as e:
+            logger.error(f"Erro ao listar citações anuais: {e}")
+            return False
+
+    @staticmethod
+    def listar_projetos_pesquisa(codpes: int) -> list[dict[str, Any]]:
+        """
+        Lista projetos de pesquisa de diversas fontes (ACIPROJETO, PDPROJETO).
+        """
+        projetos = []
+        # Tenta ACIPROJETO
+        query_aci = """
+            SELECT p.codprj, p.titprjaco as titulo, p.anoprj as ano, 'Pesquisa' as tipo
+            FROM ACIPROJETO p
+            INNER JOIN ACIPARTICIPANTE part ON p.codprj = part.codprj
+            WHERE part.codpes = :codpes
+        """
+        try:
+            projetos.extend(DB.fetch_all(query_aci, {"codpes": codpes}))
+        except Exception as e:
+            logger.warning(f"Erro ao buscar ACIPROJETO: {e}")
+
+        # Tenta PDPROJETO
+        query_pd = """
+            SELECT p.codprj, p.titprj as titulo, p.anoprj as ano, 'Pós-Doutorado' as tipo
+            FROM PDPROJETO p
+            WHERE p.codpes = :codpes
+        """
+        try:
+            projetos.extend(DB.fetch_all(query_pd, {"codpes": codpes}))
+        except Exception as e:
+            logger.warning(f"Erro ao buscar PDPROJETO: {e}")
+
+        return projetos
+
+    @staticmethod
+    def obter_detalhes_pos_doutorado(codpes: int) -> dict[str, Any] | bool:
+        """
+        Retorna detalhes do projeto de pós-doutorado.
+        """
+        query = (
+            "SELECT TOP 1 * FROM PDPROJETO WHERE codpes = :codpes ORDER BY anoprj DESC"
+        )
+        try:
+            return DB.fetch(query, {"codpes": codpes})
+        except Exception as e:
+            logger.error(f"Erro ao obter detalhes de PD: {e}")
+            return False
+
+    @staticmethod
+    def listar_areas_conhecimento(codpes: int) -> list[str]:
+        """
+        Mapeia áreas do Lattes usando AREACONHECIMENTOCNPQ.
+        """
+        lattes = Lattes.obter_array(codpes)
+        if not lattes:
+            return []
+
+        areas_lattes = get_path(
+            lattes, "DADOS-GERAIS.AREAS-DE-ATUACAO.AREA-DE-ATUACAO", []
+        )
+        if not isinstance(areas_lattes, list):
+            areas_lattes = [areas_lattes]
+
+        nomes_areas = []
+        for area in areas_lattes:
+            nome = area.get("@attributes", {}).get("NOME-DA-AREA-DO-CONHECIMENTO")
+            if nome:
+                nomes_areas.append(nome)
+
+        return nomes_areas
+
+    @staticmethod
+    def retornar_genero_pesquisador(codpes: int) -> str | None:
+        """
+        Retorna o gênero do pesquisador da tabela PESSOA.
+        """
+        query = "SELECT sexpes FROM PESSOA WHERE codpes = :codpes"
+        try:
+            res = DB.fetch(query, {"codpes": codpes})
+            return res["sexpes"] if res else None
+        except Exception as e:
+            logger.warning(f"Erro ao retornar gênero: {e}")
+            return None
