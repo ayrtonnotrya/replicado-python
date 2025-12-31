@@ -660,3 +660,129 @@ class Posgraduacao:
             ORDER BY d.nomdis ASC
         """
         return DB.fetch_all(query)
+
+    @staticmethod
+    def listar_qualificacoes(codpes: int) -> list[dict[str, Any]]:
+        """
+        Retorna o histórico de exames de qualificação do aluno.
+        """
+        query = """
+            SELECT codare, nivpgm, numseqqua, dtaqua, cctqua
+            FROM QUALIFICACAO
+            WHERE codpes = :codpes
+            ORDER BY dtaqua DESC
+        """
+        return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_coorientacoes(codpes: int) -> list[dict[str, Any]]:
+        """
+        Lista todos os coorientadores vinculados ao aluno.
+        """
+        query = """
+            SELECT codpesdctegr, nomcoi, dtainicoi, stacoi
+            FROM COORIENTACAO
+            WHERE codpes = :codpes
+            ORDER BY dtainicoi DESC
+        """
+        return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def obter_tese_dissertacao(codpes: int) -> dict[str, Any] | None:
+        """
+        Retorna o título e detalhes do trabalho de conclusão (Tese/Dissertação).
+        """
+        query = """
+            SELECT tittrb, dtadpotrb, tittrbigl
+            FROM TRABALHOPROG
+            WHERE codpes = :codpes
+            ORDER BY dtadpotrb DESC
+        """
+        return DB.fetch(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_inscricoes_area(codare: int) -> list[dict[str, Any]]:
+        """
+        Lista candidatos inscritos em uma área específica.
+        """
+        query = """
+            SELECT codpes, dtainsare, staselare, nivare
+            FROM AGINSCRICAO
+            WHERE codare = :codare
+            ORDER BY dtainsare DESC
+        """
+        return DB.fetch_all(query, {"codare": codare})
+
+    @staticmethod
+    def listar_atividades_area(codare: int) -> list[dict[str, Any]]:
+        """
+        Lista atividades curriculares (estágios, seminários) de uma área.
+        """
+        query = """
+            SELECT numseqatv, nomrefatv, tipatv, numcreatv, cgahoratv
+            FROM ATIVAREA
+            WHERE codare = :codare
+            ORDER BY numseqatv ASC
+        """
+        return DB.fetch_all(query, {"codare": codare})
+
+    @staticmethod
+    def listar_atividades_aluno(codpes: int) -> list[dict[str, Any]]:
+        """
+        Lista as atividades cumpridas por um aluno específico.
+        """
+        query = """
+            SELECT codare, numseqatv, dtainiatv, dtafimatv
+            FROM ATIVIDADEPROG
+            WHERE codpes = :codpes
+            ORDER BY dtainiatv DESC
+        """
+        return DB.fetch_all(query, {"codpes": codpes})
+
+    @staticmethod
+    def listar_idiomas() -> list[dict[str, Any]]:
+        """
+        Retorna a lista de idiomas cadastrados.
+        """
+        query = "SELECT codlin, dsclin FROM IDIOMA ORDER BY dsclin ASC"
+        return DB.fetch_all(query)
+
+    @staticmethod
+    def listar_colegiados() -> list[dict[str, Any]]:
+        """
+        Lista os órgãos colegiados da pós-graduação.
+        """
+        query = "SELECT codclg, sglclg, nomclg FROM COLEGIADO ORDER BY nomclg ASC"
+        return DB.fetch_all(query)
+
+    @staticmethod
+    def listar_linhas_pesquisa(codare: int) -> list[dict[str, Any]]:
+        """
+        Lista as linhas de pesquisa ativas de uma determinada área.
+        """
+        query = """
+            SELECT codlnh, nomlnh, dtadtvlnh
+            FROM LINHAPESQUISA
+            WHERE codare = :codare
+            AND dtadtvlnh IS NULL
+            ORDER BY nomlnh ASC
+        """
+        return DB.fetch_all(query, {"codare": codare})
+
+    @staticmethod
+    def obter_detalhes_inscricao(codpes: int, codare: int) -> dict[str, Any] | None:
+        """
+        Retorna detalhes completos da inscrição do aluno em uma área.
+        """
+        query = """
+            SELECT i.codpes, i.codare, i.dtainsare, i.staselare, i.nivare,
+                   c.nomcur, a.nomare
+            FROM AGINSCRICAO i
+            INNER JOIN AREA ar ON i.codare = ar.codare
+            INNER JOIN NOMECURSO c ON ar.codcur = c.codcur
+            INNER JOIN NOMEAREA a ON i.codare = a.codare
+            WHERE i.codpes = :codpes AND i.codare = :codare
+            AND c.dtafimcur IS NULL
+            AND a.dtafimare IS NULL
+        """
+        return DB.fetch(query, {"codpes": codpes, "codare": codare})
