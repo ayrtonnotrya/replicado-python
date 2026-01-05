@@ -50,7 +50,7 @@ class DB:
 
             # Montagem da URL de conexão para MSSQL/Sybase via pymssql
             # Formato: mssql+pymssql://<username>:<password>@<host>:<port>/<database>?charset=utf8
-            connection_string = f"mssql+pymssql://{user}:{password}@{host}:{port}/{database}?charset=utf8"
+            connection_string = f"mssql+pymssql://{user}:{password}@{host}:{port}/{database}?charset=utf8&tds_version=7.0"
 
             cls._engine = create_engine(
                 connection_string,
