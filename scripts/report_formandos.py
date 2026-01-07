@@ -13,7 +13,7 @@ def main():
     load_dotenv()
     
     input_file = "temp/formandos_raw.txt"
-    output_file = "formandos_medias.csv"
+    output_file = "temp/formandos_medias.csv"
     
     print(f"Lendo dados de {input_file}...")
     
@@ -75,18 +75,23 @@ def main():
         try:
             # Obtém média suja
             media = Graduacao.obter_media_ponderada_suja(codpes)
-            aluno['media_suja'] = media
-            print(f"✅ {aluno['nome']} ({codpes}): {media}")
+            # Formata média para PT-BR (vírgula como decimal)
+            if isinstance(media, (float, int)):
+                aluno['media_suja'] = str(media).replace('.', ',')
+            else:
+                aluno['media_suja'] = str(media)
+            
+            print(f"✅ {aluno['nome']} ({codpes}): {aluno['media_suja']}")
             results.append(aluno)
         except Exception as e:
             print(f"❌ Erro para {codpes}: {e}")
             aluno['media_suja'] = "ERRO"
             results.append(aluno)
 
-    # Escreve CSV
-    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+    # Escreve CSV com delimitador ; e encoding utf-8-sig (BOM) para Excel abrir corretamente
+    with open(output_file, 'w', newline='', encoding='utf-8-sig') as csvfile:
         fieldnames = ['codpes', 'nome', 'curso', 'media_suja']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';')
 
         writer.writeheader()
         for data in results:
