@@ -677,6 +677,10 @@ def features_professor_horario(
     # Dia D, sem ``nummtr``) das turmas que ele ministrou em semestres
     # PASSADOS. Anonimização determinística (LGPD). Não há contas degeneradas
     # aqui (uma média pura em estmtr, não uma razão envolvendo nummtr).
+    # Agregamos estmtr por semestre ANTES do shift para evitar ordem
+    # indeterminada entre turmas do mesmo semestre de um mesmo docente: o
+    # expanding deve correr sobre a série semestral (1 ponto por semestre),
+    # não sobre uma lista arbitrária de turmas.
     mapa: dict[int, str] = {}
     cont: list[int] = [0]
     minis2 = minis.copy()
@@ -685,12 +689,18 @@ def features_professor_horario(
     )
     turmas_past = df[["coddis", "codtur", "ano_sem", "estmtr_val"]]
     mp = minis2.merge(turmas_past, on=["coddis", "codtur"], how="inner")
-    mp = mp.sort_values(["id_prof", "ano_sem"])
-    mp["media_hist_prof"] = mp.groupby("id_prof")["estmtr_val"].transform(
+    serie_sem = (
+        mp.groupby(["id_prof", "ano_sem"], as_index=False)["estmtr_val"]
+        .mean()
+        .sort_values(["id_prof", "ano_sem"])
+    )
+    serie_sem["media_hist_prof"] = serie_sem.groupby("id_prof")["estmtr_val"].transform(
         lambda s: s.shift(1).expanding().mean()
     )
     forca = (
-        mp.groupby(["coddis", "codtur", "ano_sem"])["media_hist_prof"]
+        serie_sem.merge(mp[["id_prof", "coddis", "codtur", "ano_sem"]],
+                         on=["id_prof", "ano_sem"], how="inner")
+        .groupby(["coddis", "codtur", "ano_sem"])["media_hist_prof"]
         .mean()
         .reset_index()
     )
@@ -830,9 +840,13 @@ def features_rede_requisitos(
             preds = preds_map.get(disc_atual, [])
             if not preds:
                 continue
-            sem_prev = (sem_alvo // 10 - (0 if sem_alvo % 10 == 1 else 1)) * 10 + (
-                1 if sem_alvo % 10 == 2 else 2
-            )
+            # Semestre imediatamente anterior (t-1): 1S→2S ano-1, 2S→1S mesmo ano.
+            ano_alvo = sem_alvo // 10
+            sem_tipo_alvo = sem_alvo % 10
+            if sem_tipo_alvo == 1:
+                sem_prev = (ano_alvo - 1) * 10 + 2  # 20231 -> 20222
+            else:
+                sem_prev = ano_alvo * 10 + 1  # 20232 -> 20231
             if sem_prev < cfg.ano_min * 10:
                 continue
             press = sum(rmap.get((p, sem_prev), 0) for p in preds)
@@ -850,10 +864,12 @@ def _montar_grafo_requisitos(grade: pd.DataFrame):
     """Constrói um DiGraph aproximado de pré-requisitos.
 
     A GRADECURRICULAR não traz as arestas diretas; como fallback aproximado,
-    criamos arestas (coddis_sem_n < coddis_sem_n+k) dentro de cada
-    (codcur, codhab): disciplinas de semestre menor precedem as de maior
-    semestre. Isso aproxima a topologia quando GRUPOREQUISITO não está
-    disponível.
+    criamos arestas apenas entre disciplinas de semestres **consecutivos**
+    (diferença de ``numsemidl`` <= 2) dentro de cada (codcur, codhab), e não
+    mais entre quaisquer i<j. Ligar o 1º ao 8º semestre produzia um grafo
+    quase completo que achatava ``net_betweenness`` (tudo homogêneo) e
+    inflava ``pressao_represada``. Se ``GRUPOREQUISITO``/``REQUISITOGR``
+    estiverem disponíveis no futuro, devem substituir este fallback.
     """
     if nx is None or grade is None or not len(grade):
         return None
@@ -861,13 +877,18 @@ def _montar_grafo_requisitos(grade: pd.DataFrame):
     grade = grade.dropna(subset=["coddis", "numsemidl"]).copy()
     grade["numsemidl"] = pd.to_numeric(grade["numsemidl"], errors="coerce")
     for (_codcur, _codhab), grp in grade.groupby(["codcur", "codhab"]):
-        sems = grp.drop_duplicates("coddis")[["coddis", "numsemidl"]].sort_values(
-            "numsemidl"
+        sems = (
+            grp.drop_duplicates("coddis")[["coddis", "numsemidl"]]
+            .dropna()
+            .sort_values("numsemidl")
         )
         discs = sems["coddis"].tolist()
+        sems_num = sems["numsemidl"].tolist()
         for i in range(len(discs)):
             for j in range(i + 1, len(discs)):
-                g.add_edge(discs[i], discs[j])
+                # Apenas semestres próximos (consecutivos ou gap <= 2).
+                if sems_num[j] - sems_num[i] <= 2:
+                    g.add_edge(discs[i], discs[j])
     return g
 
 
