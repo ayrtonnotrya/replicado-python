@@ -1,7 +1,9 @@
 import logging
 import os
+from collections.abc import Iterator
 from typing import Any
 
+import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -110,6 +112,44 @@ class DB:
             ]
             logger.debug(f"Retornadas {len(data)} linhas")
             return data
+
+    @classmethod
+    def fetch_count(cls, query: str, params: dict | None = None) -> int:
+        """Executa uma query que retorna um único inteiro (ex.: ``SELECT COUNT(*)``).
+
+        Útil para alimentar o ``total`` de barras de progresso antes do
+        streaming de chunks.
+        """
+        with cls.get_engine().connect() as conn:
+            row = conn.execute(text(query), params or {}).scalar()
+        return int(row or 0)
+
+    @classmethod
+    def iter_chunks(
+        cls, query: str, params: dict | None = None, chunksize: int = 5000
+    ) -> Iterator[pd.DataFrame]:
+        """Lê uma query em fatias (``pandas.read_sql`` com ``chunksize``).
+
+        Permite streaming com ``tqdm`` para tabelas grandes sem carregar tudo
+        na memória de uma vez. Cada iteração devolve um ``DataFrame`` com até
+        ``chunksize`` linhas. As strings são normalizadas via
+        :func:`replicado.utils.clean_string` para consistência com
+        :meth:`fetch_all`.
+        """
+        engine = cls.get_engine()
+        reader = pd.read_sql_query(
+            sql=text(query),
+            con=engine,
+            params=params or {},
+            chunksize=chunksize,
+        )
+        for chunk in reader:
+            for col in chunk.columns:
+                if chunk[col].dtype == object:
+                    chunk[col] = chunk[col].map(
+                        lambda v: clean_string(v) if isinstance(v, str) else v
+                    )
+            yield chunk
 
     @classmethod
     def fetch(cls, query: str, params: dict | None = None) -> dict | None:

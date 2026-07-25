@@ -27,6 +27,20 @@ Ordem de execução:
    valida contra `temp/turmas_internas.csv` (ground truth 2022-2026).
 3. `scripts/alvo_pico_ocupacao.py` — constrói o alvo `T_pico` (pico de
    ocupação nas 3 primeiras semanas) para o modelo de alocação de salas.
+4. `scripts/build_dataset.py` / `replicado.dataset_alocacao` — **fornecedor
+   do dataset linha-por-turma** (features + alvos) pronto para treino.
+   Agnóstico à unidade: escopo via `DatasetConfig` (`.env`
+   `REPLICADO_CODUNDCLG`, `REPLICADO_PREFIXOS_DISC`, etc.) ou flags do CLI.
+   Extrai tabelas auxiliares (GRADECURRICULAR, OCUPTURMA, PROGRAMAGR,
+   HABILPROGGR, MINISTRANTE, DETTURMAGR, DISCIPLINAGR, DISCIPGRCODIGO,
+   PERIODOHORARIO, CURSOGR) com streaming tqdm (COUNT + chunks via
+   `DB.iter_chunks`) e cacheia em `temp/cache_maquina_tempo/aux_*_<cod>.pkl`.
+   Gera 3 alvos: `nummtr` (soma das 5 vias), `pico_max` (T_pico) e `estmtr`
+   (proxy/baseline).Features avançadas: espaço de fase (resíduo/volatilidade
+   lagged), pressão de represamento, métricas topológicas (betweenness/
+   PageRank do grafo de pré-requisitos), concorrência horária e sincronia de
+   bloco. Sem vazamento: contadores consolidados (numins*, nummtr* cru,
+   ocup_d+*) são descartados via `COLUNAS_VAZAMENTO`.
 
 ## Regras descobertas (engenharia reversa — NÃO re-derivar)
 
@@ -80,4 +94,12 @@ Ordem de execução:
   pyarrow não é dependência). O glob `histescolar_*.pkl` pegaria também o
   `histescolar_gt.pkl` do script do estmtr — por isso o alvo carrega anos
   explicitamente.
-- Saídas de análise: `temp/validacao_estmtr.csv`, `temp/alvo_pico_ocupacao.csv`.
+- Saídas de análise: `temp/validacao_estmtr.csv`, `temp/alvo_pico_ocupacao.csv`,
+  `temp/dataset_alocacao.csv` (dataset de treino).
+- Config agnóstica à unidade: `DatasetConfig.from_env()` lê
+  `REPLICADO_CODUNDCLG`, `REPLICADO_PREFIXOS_DISC` (CSV), `REPLICADO_SUFIXO_MIN`,
+  `REPLICADO_ANO_MIN/MAX`, `REPLICADO_DIAS_CORTE`, `REPLICADO_PISO_VAGAS`,
+  `REPLICADO_TOP_CURSOS`. Para outra unidade, defina no `.env` ou passe
+  `--codundclg`/`--prefixos` no CLI.
+- Deps novas do provider: `tqdm` (barra de progresso de extração) e
+  `networkx` (grafo de pré-requisitos).
