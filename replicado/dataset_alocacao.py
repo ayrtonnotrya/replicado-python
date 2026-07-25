@@ -775,11 +775,9 @@ def features_rede_requisitos(
             if sem_prev < cfg.ano_min * 10:
                 continue
             press = sum(rmap.get((p, sem_prev), 0) for p in preds)
-            est = df[(df["ano_sem"] == sem_alvo) & (df["coddis"] == disc_atual)][
-                "estmtr_val"
-            ]
-            est_v = int(est.iloc[0]) if len(est) else 0
-            rep_prev[(disc_atual, sem_alvo)] = press / (est_v + 1)
+            sub = df[(df["ano_sem"] == sem_alvo) & (df["coddis"] == disc_atual)]
+            denom = int(sub["vagas_reais"].iloc[0]) if len(sub) else 1
+            rep_prev[(disc_atual, sem_alvo)] = press / max(denom, 1)
 
     df["pressao_represada"] = df.set_index(["coddis", "ano_sem"]).index.map(
         lambda k: rep_prev.get(k, 0.0)
@@ -826,38 +824,58 @@ def features_concorrencia_horaria(
 ) -> pd.DataFrame:
     """Concorrência horária: variação média do estmtr dos vizinhos do mesmo
     bloco de horário (excluindo a própria turma) e indicador de sincronia do
-    bloco (proporção de pares com público compartilhado)."""
+    bloco (densidade real do bloco, agregando 1 linha por turma mesmo quando
+    ela tem múltiplos horários/dias)."""
     df = t.copy()
     ocup = dados["ocup"]
+    if "var_pct_estmtr" not in df.columns:
+        df["var_pct_estmtr"] = 0.0
     if not len(ocup):
         df["delta_estmtr_vizinhos"] = 0.0
         df["ind_sincronia_bloco"] = 0.0
         return df
+
     o = ocup[["coddis", "codtur", "diasmnocp", "horent"]].copy()
     o = o[o["codtur"].isin(df["codtur"])]
-    o["bloco_horario"] = o["diasmnocp"].astype(str) + "_" + o["horent"].astype(str)
-    df = df.merge(
-        o[["coddis", "codtur", "bloco_horario"]], on=["coddis", "codtur"], how="left"
-    )
-    df["bloco_horario2"] = (
-        df["bloco_horario"].astype(str) + "_" + df["ano_sem"].astype(str)
-    )
+    if not len(o):
+        df["delta_estmtr_vizinhos"] = 0.0
+        df["ind_sincronia_bloco"] = 0.0
+        return df
+    o["bloco"] = o["diasmnocp"].astype(str) + "_" + o["horent"].astype(str)
+    blocos = o[["coddis", "codtur", "bloco"]].drop_duplicates()
 
-    # Variação própria do estmtr (t vs t-1) por (coddis, sufixo) já calculada
-    # em features_espaco_fase como var_pct_estmtr.
-    if "var_pct_estmtr" not in df.columns:
-        df["var_pct_estmtr"] = 0.0
-    soma = df.groupby("bloco_horario2")["var_pct_estmtr"].transform("sum")
-    qtd = df.groupby("bloco_horario2")["var_pct_estmtr"].transform("count")
-    df["delta_estmtr_vizinhos"] = np.where(
-        qtd > 1, (soma - df["var_pct_estmtr"]) / (qtd - 1), 0.0
+    # Cada turma pode pertencer a 1+ blocos (multi-dia); replicamos a turma
+    # por bloco, calculamos vizinhança por bloco e agregamos (1 linha final
+    # por turma) para não inflar o dataset.
+    tmp = df[["coddis", "codtur", "ano_sem", "var_pct_estmtr"]].copy()
+    tmp = tmp.merge(blocos, on=["coddis", "codtur"], how="left")
+    tmp = tmp.dropna(subset=["bloco"]).copy() if len(tmp) else tmp
+    if not len(tmp):
+        df["delta_estmtr_vizinhos"] = 0.0
+        df["ind_sincronia_bloco"] = 0.0
+        return df
+    tmp["bloco_sem"] = tmp["bloco"].astype(str) + "_" + tmp["ano_sem"].astype(str)
+
+    soma = tmp.groupby("bloco_sem")["var_pct_estmtr"].transform("sum")
+    qtd = tmp.groupby("bloco_sem")["var_pct_estmtr"].transform("count")
+    tmp["delta_vizinhos_bloco"] = np.where(
+        qtd > 1, (soma - tmp["var_pct_estmtr"]) / (qtd - 1), 0.0
     )
-    # Sincronia: fração de turmas no mesmo bloco (proxy do compartilhamento de
-    # público). Aqui usamos a densidade do bloco (qtd-1)/(total-1) como proxy,
-    # já que não dispomos da tabela de público por turma.
-    total = len(df)
-    df["ind_sincronia_bloco"] = np.where(total > 1, (qtd - 1) / (total - 1), 0.0)
-    df.drop(columns=["bloco_horario", "bloco_horario2"], inplace=True, errors="ignore")
+    # Sincronia: densidade do próprio bloco (fração de co-turmas que existem);
+    # 0 quando há só a própria, tende a 1 em blocos cheios.
+    tmp["sincronia_bloco"] = np.where(qtd > 1, (qtd - 1) / qtd, 0.0)
+
+    agg = (
+        tmp.groupby(["coddis", "codtur", "ano_sem"])
+        .agg(
+            delta_estmtr_vizinhos=("delta_vizinhos_bloco", "mean"),
+            ind_sincronia_bloco=("sincronia_bloco", "max"),
+        )
+        .reset_index()
+    )
+    df = df.merge(agg, on=["coddis", "codtur", "ano_sem"], how="left")
+    df["delta_estmtr_vizinhos"] = df["delta_estmtr_vizinhos"].fillna(0.0)
+    df["ind_sincronia_bloco"] = df["ind_sincronia_bloco"].fillna(0.0)
     return df
 
 
