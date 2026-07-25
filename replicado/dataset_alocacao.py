@@ -15,20 +15,44 @@ tabelas auxiliares ainda não cacheadas, com barra de progresso tqdm):
                               PROGRAMAGR, HABILPROGGR, MINISTRANTE,
                               DETTURMAGR, DISCIPLINAGR, DISCIPGRCODIGO,
                               PERIODOHORARIO, CURSOGR).
-2.  ``reconstruir_estmtr``  — estmtr histórico (regra dtacrihst<=dtainitur-Nd,
-                              sem filtro de stamtr; ver
-                              ``scripts/maquina_tempo_estmtr.py``).
-3.  ``reconstruir_alvo_pico`` — T_pico = máx. ocupação nas 3 primeiras semanas
-                              (ver ``scripts/alvo_pico_ocupacao.py``).
-4.  ``features_*``          — base + histórico + demanda + professor/horário
+2.  ``reconstruir_estmtr``    — ``estmtr`` histórico (regra
+                              dtacrihst<=dtainitur-Nd, sem filtro de stamtr;
+                              ver ``scripts/maquina_tempo_estmtr.py``). É a
+                              FEATURE central do dataset (sinal disponível no
+                              "Dia D", quando as salas são distribuídas: os
+                              alunos já estão inscritos) E também um dos
+                              dois ingredientes do alvo.
+3.  ``reconstruir_alvo_nummtr_max`` — ``nummtr_max`` = máx. ocupação nas 3
+                              primeiras semanas de aula (ver
+                              ``scripts/alvo_pico_ocupacao.py``). Não vira
+                              feature: é ingrediente do alvo e, mantida crua,
+                              permitira ao modelo resolver o alvo por uma
+                              subtração trivial. Aparece aqui só para derivar
+                              o alvo e em seguida é descartada.
+4.  Alvo: ``delta = nummtr_max - estmtr`` — o quanto o ``estmtr`` (proxy do
+                              Júpiter no Dia D) erra em relação ao pico de
+                              ocupação esperado. É o ÚNICO alvo preditivo: o
+                              modelo aprende o fator de correção da estimativa
+                              institucional.
+5.  ``features_*``          — base + histórico + demanda + professor/horário
                               + ingressantes; mais as features **avançadas**
-                              (Módulos 2-4: espaço de fase, pressão de
-                              represamento, métricas de rede, concorrência
-                              horária, atratividade docente).
-5.  merge final             — um ``DataFrame`` por turma, com colunas
-                              ``nummtr`` (alvo T_final), ``pico_max`` (alvo
-                              T_pico) e ``estmtr`` (baseline/proxy). Os
-                              alvos não viram features (sem vazamento).
+                              (Módulos 2-4: espaço de fase do ``estmtr``,
+                              pressão de represamento, métricas de rede,
+                              concorrência horária, atratividade docente).
+                              NENHUMA feature usa ``nummtr``/``nummtr_max``/
+                              ``nummtr_total``: tudo que depende do pico
+                              consolidado vaza o alvo. As antigas features de
+                              histórico/espaço de fase que usavam
+                              ``nummtr_total`` foram reinterpretadas em função
+                              de ``estmtr`` (média/máx/resíduo do proxy no
+                              passado) — onde a reinterpretação faz sentido
+                              matemático; contas degeneradas (``nummtr/estmtr``
+                              → sempre 1) foram descartadas.
+6.  merge final             — um ``DataFrame`` por turma, com a feature
+                              ``estmtr`` e o alvo ``delta``. As colunas cruas
+                              que vazam o alvo (``nummtr`` consolidado da
+                              TURMAGR, o próprio ``nummtr_max`` e as
+                              ``ocup_d+*`` que o geram) são descartadas.
 
 Uso
 ---
@@ -361,12 +385,16 @@ def reconstruir_estmtr(
     return out[["coddis", "codtur", "estmtr_val"]]
 
 
-def reconstruir_alvo_pico(
+def reconstruir_alvo_nummtr_max(
     cfg: DatasetConfig, turmas: pd.DataFrame, hist: pd.DataFrame
 ) -> pd.DataFrame:
-    """``T_pico = max(ocupacao)`` em ``dias_pico`` pós-início, onde
-    ``ocupacao(D) = |criados<=D| - |stamtr∈(E,R) com dtaultalt<=D|``. Regra
-    validada em ``scripts/alvo_pico_ocupacao.py``."""
+    """``nummtr_max = max(ocupacao)`` em ``dias_pico`` pós-início, onde
+    ``ocupacao(D) = |criados<=D| - |stamtr∈(E,R) com dtaultalt<=D|``.
+
+    Único alvo preditivo do dataset: dimensiona a sala pelo pico de ocupação
+    nas primeiras semanas. Regra validada em
+    ``scripts/alvo_pico_ocupacao.py`` (``T_pico`` no script; renomeado
+    ``nummtr_max`` no dataset por clareza)."""
     base = turmas[["coddis", "codtur", "dtainitur"]].copy()
     h = hist[["coddis", "codtur", "dtacrihst", "stamtr", "dtaultalt"]].merge(
         base, on=["coddis", "codtur"], how="inner"
@@ -392,34 +420,27 @@ def reconstruir_alvo_pico(
             .values
         )
     cols = [f"ocup_d{d:+d}" for d in cfg.dias_pico if d >= 0]
-    out["pico_max"] = out[cols].max(axis=1).astype(int)
-    return out[["coddis", "codtur", "pico_max", *cols]]
+    out["nummtr_max"] = out[cols].max(axis=1).astype(int)
+    return out[["coddis", "codtur", "nummtr_max", *cols]]
 
 
 # ---------------------------------------------------------------------------
 # Features base (operacional — replica o motor saneado do notebook)
 # ---------------------------------------------------------------------------
-def _nummtr_total(t: pd.DataFrame) -> pd.Series:
-    cols = [
-        "nummtr",
-        "nummtropt",
-        "nummtroptlre",
-        "nummtrturcpl",
-        "nummtrecr",
-    ]
-    for c in cols:
-        if c not in t.columns:
-            t[c] = 0
-    return t[cols].fillna(0).sum(axis=1).astype(int)
-
-
 def features_base(
     cfg: DatasetConfig, turmas_f: pd.DataFrame, dados: dict[str, pd.DataFrame]
 ) -> pd.DataFrame:
     """Vagas saneadas (piso configurável), cargas, sufixo/departamento, flags
-    operacionais."""
+    operacionais.
+
+    Note: a consolidação ``nummtr_total`` (soma das vias de matrícula) era
+    computada aqui por :func:`features_historico`/:func:`features_espaco_fase`
+    e :func:`features_professor_horario`. Como o alvo virou ``delta =
+    nummtr_max - estmtr``, qualquer uso de ``nummtr`` vaza o alvo, e todas
+    essas features passaram a usar ``estmtr``. Por isso a consolidação crua
+    deixou de ser necessária e foi removida — persistindo apenas no
+    ``COLUNAS_VAZAMENTO`` para garantir descarte."""
     t = turmas_f.copy()
-    t["nummtr_total"] = _nummtr_total(t)
 
     # Vagas detalhadas por fatia (DETTURMAGR.discrl: O/C/L/...)
     det = dados["detturma"]
@@ -461,30 +482,50 @@ def features_base(
 
 
 def features_historico(cfg: DatasetConfig, t: pd.DataFrame) -> pd.DataFrame:
-    """Média/máx de matrículas por (disciplina,sufixo) e por disciplina, e
-    perfil histórico de estouro (taxa e excesso máximo), computados APENAS
-    com semestres passados (sem vazamento do alvo)."""
+    """Perfil histórico reescrito em função de ``estmtr`` (sem ``nummtr``).
+
+    Como o alvo é ``delta = nummtr_max - estmtr``, qualquer estatística que
+    use ``nummtr_total``/``nummtr_max`` vazia o alvo. Reinterpretamos todas
+    as séries em função do proxy ``estmtr_val`` (disponível no Dia D),
+    computadas APENAS com semestres passados (``.shift(1).expanding()``):
+
+    - ``media/max_hist_estmtr_(sufixo|dis)`` — nível histórico do proxy. Faz
+      sentido: são a "memória" do tamanho típico da turma segundo o Júpiter;
+      - ``hist_taxa_estouro`` — frequência com que o ``estmtr`` passado
+      ULTRAPASSOU as vagas reais. Mede o quão agressivo o proxy tem sido
+      frente à oferta de vagas (não envolve ``nummtr``).
+    - ``hist_max_excesso`` — maior valor de ``estmtr - vagas_reais`` no
+      passado (proxy de "pior excesso já sinalizado pelo Júpiter").
+    """
+    if "estmtr_val" not in t.columns:
+        return t.copy()
     df = t.sort_values(["coddis", "sufixo", "ano_sem"]).reset_index(drop=True)
 
-    g_suf = df.groupby(["coddis", "sufixo"], sort=False)["nummtr_total"]
+    g_suf = df.groupby(["coddis", "sufixo"], sort=False)["estmtr_val"]
     df["media_hist_sufixo"] = g_suf.transform(lambda s: s.shift(1).expanding().mean())
     df["max_hist_sufixo"] = g_suf.transform(lambda s: s.shift(1).expanding().max())
 
     g_dis = df.sort_values(["coddis", "ano_sem"]).groupby("coddis", sort=False)[
-        "nummtr_total"
+        "estmtr_val"
     ]
     df = df.sort_values(["coddis", "ano_sem"]).reset_index(drop=True)
     df["media_hist_dis"] = g_dis.transform(lambda s: s.shift(1).expanding().mean())
     df["max_hist_dis"] = g_dis.transform(lambda s: s.shift(1).expanding().max())
 
     df = df.sort_values(["coddis", "sufixo", "ano_sem"]).reset_index(drop=True)
-    df["media_hist_matriculas"] = df["media_hist_sufixo"].fillna(df["media_hist_dis"])
-    df["max_hist_matriculas"] = df["max_hist_sufixo"].fillna(df["max_hist_dis"])
+    df["media_hist_estmtr"] = df["media_hist_sufixo"].fillna(df["media_hist_dis"])
+    df["max_hist_estmtr"] = df["max_hist_sufixo"].fillna(df["max_hist_dis"])
 
-    df["_over"] = (df["nummtr_total"] > df["vagas_reais"]).astype(int)
+    # Resíduo do proxy contra sua própria média histórica (passada): sinal
+    # puro de estmtr, sem nummtr — diferença (não razão, que degeneraria).
+    df["estmtr_residuo_media"] = (
+        df["estmtr_val"] - df["media_hist_estmtr"]
+    ).fillna(0)
+
+    df["_over"] = (df["estmtr_val"] > df["vagas_reais"]).astype(int)
     df["_exc"] = np.where(
-        df["nummtr_total"] > df["vagas_reais"],
-        df["nummtr_total"] - df["vagas_reais"],
+        df["estmtr_val"] > df["vagas_reais"],
+        df["estmtr_val"] - df["vagas_reais"],
         0,
     )
     grp = df.groupby(["coddis", "sufixo"], sort=False)
@@ -632,18 +673,20 @@ def features_professor_horario(
     df = df.merge(qtd_turmas, on=["coddis", "ano_sem"], how="left")
     df["qtd_turmas_abertas"] = df["qtd_turmas_abertas"].fillna(0).astype(int)
 
-    # Força histórica do docente: média de nummtr_total das turmas que ele
-    # ministrou em semestres PASSADOS. Anonimização determinística (LGPD).
+    # Força histórica do docente: média de ``estmtr`` (proxy disponível no
+    # Dia D, sem ``nummtr``) das turmas que ele ministrou em semestres
+    # PASSADOS. Anonimização determinística (LGPD). Não há contas degeneradas
+    # aqui (uma média pura em estmtr, não uma razão envolvendo nummtr).
     mapa: dict[int, str] = {}
     cont: list[int] = [0]
     minis2 = minis.copy()
     minis2["id_prof"] = minis2["codpes_prof"].map(
         lambda v: anonimizar_codpes(v, mapa, cont)
     )
-    turmas_past = df[["coddis", "codtur", "ano_sem", "nummtr_total"]]
+    turmas_past = df[["coddis", "codtur", "ano_sem", "estmtr_val"]]
     mp = minis2.merge(turmas_past, on=["coddis", "codtur"], how="inner")
     mp = mp.sort_values(["id_prof", "ano_sem"])
-    mp["media_hist_prof"] = mp.groupby("id_prof")["nummtr_total"].transform(
+    mp["media_hist_prof"] = mp.groupby("id_prof")["estmtr_val"].transform(
         lambda s: s.shift(1).expanding().mean()
     )
     forca = (
@@ -705,23 +748,41 @@ def features_ingressantes(
 # Features avançadas (Módulos 2-4: espaço de fase, rede, concorrência, sincronia)
 # ---------------------------------------------------------------------------
 def features_espaco_fase(cfg: DatasetConfig, t: pd.DataFrame) -> pd.DataFrame:
-    """Resíduo histórico (δ=nummtr−estmtr), velocidade e volatilidade, todos
-    LAGGED (apenas passado) para não vazar o alvo."""
-    if "estmtr_val" not in t.columns or "nummtr_total" not in t.columns:
+    """Sinais de fase (velocidade/volatilidade) reescritos em função de
+    ``estmtr`` apenas — sem ``nummtr_max``.
+
+    O antigo resíduo ``δ = nummtr_max - estmtr`` era LAGGED e portanto não
+    vazava o alvo do semestre corrente, mas o usuário optou pela regra mais
+    conservadora de **nenhuma** feature derivada de ``nummtr`` (sequer
+    lagged), para isolar totalmente o alvo ``delta``. As contas que
+    sobrevivem têm interpretação autossuficiente em ``estmtr``:
+
+    - ``var_pct_estmtr`` — ``Δestmtr / estmtr_passado`` (tendência do proxy
+      entre semestres consecutivos lagged). Não é razão ``nummtr/estmtr``
+      (que degeneraria em 1): numerador e denominador vêm de estágios
+      temporais distintos da mesma série.
+    - ``d_estmtr_dt_t1`` — diferença (variação absoluta) do ``estmtr`` entre
+      os dois semestres anteriores (velocidade do proxy, sem normalização).
+    - ``volatilidade_estmtr`` — desvio-padrão expansivo do ``estmtr``
+      passado: quão estável é o proxy da turma ao longo do tempo.
+    """
+    if "estmtr_val" not in t.columns:
         return t.copy()
     df = t.sort_values(["coddis", "sufixo", "ano_sem"]).reset_index(drop=True)
     g = df.groupby(["coddis", "sufixo"], sort=False)
-    df["_delta"] = df["nummtr_total"] - df["estmtr_val"]
-    df["delta_residuo_t1"] = g["_delta"].shift(1)
-    df["d_delta_dt_t1"] = g["delta_residuo_t1"].diff().fillna(0)
-    df["volatilidade_fase_delta"] = (
-        g["delta_residuo_t1"].transform(lambda s: s.expanding().std()).fillna(0)
-    )
     prev_est = g["estmtr_val"].shift(1)
+    # Variação percentual: Δ / proxy_passado (denominador ≠ 0). Não degenera.
     df["var_pct_estmtr"] = (
         (df["estmtr_val"] - prev_est) / prev_est.replace(0, np.nan)
     ).fillna(0)
-    df.drop(columns=["_delta"], inplace=True)
+    # Velocidade absoluta lagged — puro estmtr.
+    df["d_estmtr_dt_t1"] = prev_est.diff().fillna(0)
+    # Volatilidade expansiva do proxy.
+    df["volatilidade_estmtr"] = (
+        g["estmtr_val"]
+        .transform(lambda s: s.shift(1).expanding().std())
+        .fillna(0)
+    )
     return df
 
 
@@ -894,12 +955,18 @@ COLUNAS_IDENT = [
     "tiptur",
     "statur",
 ]
-COLUNAS_ALVO = ["nummtr", "pico_max", "estmtr"]
+# Único alvo preditivo: ``delta = nummtr_max - estmtr`` — o quanto o proxy
+# institucional ``estmtr`` (feature, conhecido no Dia D) erra em relação ao
+# pico de ocupação esperado. ``estmtr`` é FEATURE (não aqui); ``nummtr_max``
+# cru também NÃO é feature: é ingrediente do alvo e descartado.
+COLUNAS_ALVO = ["delta"]
 
-# Colunas cruas da TURMAGR/HIST que consolidam DEPOIS do "Dia D" e portanto
-# vazam o alvo se usadas como feature. O dataset sai sem elas; os alvos são
-# derivados explicitamente: ``nummtr`` (soma das 5 vias), ``pico_max``
-# (máx. ocupação reconstruído) e ``estmtr`` (registros criados até o corte).
+# Colunas cruas da TURMAGR/HIST que consolidam DEPOIS do "Dia D" (ou que
+# reconstruem o próprio alvo) e portanto vazam o alvo se usadas como feature.
+# O dataset sai sem elas. O ``delta`` é derivado explicitamente de
+# ``nummtr_max`` (reconstrução de ocupação) e ``estmtr`` (reconstrução do
+# proxy), e em seguida tanto o ``nummtr_max`` cru quanto as ``ocup_d+*`` que
+# o geram, quanto o ``nummtr`` consolidado da TURMAGR, são descartados.
 COLUNAS_VAZAMENTO = [
     "numins",
     "numinsopt",
@@ -911,6 +978,7 @@ COLUNAS_VAZAMENTO = [
     "numpmtoptlre",
     "numpmtcpl",
     "numpmtecr",
+    "nummtr",
     "nummtropt",
     "nummtroptlre",
     "nummtrturcpl",
@@ -925,6 +993,7 @@ COLUNAS_VAZAMENTO = [
     "dtainitur",
     "tipmtr",
     "estmtr_val",
+    "nummtr_max",
     "nummtr_total",
     "dta_corte",
 ]
@@ -942,7 +1011,7 @@ def montar_dataset(
     cfg: DatasetConfig | None = None,
     forcar_extracao: bool = False,
 ) -> pd.DataFrame:
-    """Constrói o DataFrame mestre (features + alvos) por turma.
+    """Constrói o DataFrame mestre (features + alvo) por turma.
 
     Sai em ``cfg.saida`` (CSV). Retorna o DataFrame.
     """
@@ -957,32 +1026,36 @@ def montar_dataset(
     turmas_f = filtrar_turmas(cfg, dados["turmas"])
     print(f"Turmas no escopo: {len(turmas_f)}")
 
-    # Alvos
+    # ``estmtr`` (feature central) e ``nummtr_max`` (ingrediente do alvo).
+    # Nenhum ``nummtr`` consoliddado vira coluna: vaza o alvo.
     est = reconstruir_estmtr(cfg, turmas_f, dados["hist"])
-    pico = reconstruir_alvo_pico(cfg, turmas_f, dados["hist"])
+    pico = reconstruir_alvo_nummtr_max(cfg, turmas_f, dados["hist"])
 
     # Base
     df = features_base(cfg, turmas_f, dados)
     df = df.merge(est, on=["coddis", "codtur"], how="left")
     df = df.merge(pico, on=["coddis", "codtur"], how="left")
     df["estmtr"] = df["estmtr_val"].astype(int)
-    df["nummtr"] = df["nummtr_total"].astype(int)
-    df["pico_max"] = df["pico_max"].astype(int)
+    df["nummtr_max"] = df["nummtr_max"].astype(int)
+    # Alvo único: ``delta = nummtr_max - estmtr``. O modelo aprende a
+    # correção a ser aplicada ao proxy do Júpiter no Dia D.
+    df["delta"] = df["nummtr_max"] - df["estmtr"]
 
-    # Histórico + demanda + prof/horário + ingressantes
+    # Histórico + demanda + prof/horário + ingressantes (todos em estmtr)
     df = features_historico(cfg, df)
     df = features_demanda(cfg, df, dados["hist"], dados)
     df = features_professor_horario(cfg, df, dados)
     df = features_ingressantes(cfg, df, dados["grade"])
 
-    # Avançadas (precisam de estmtr_val/nummtr_total ainda presentes)
+    # Avançadas (precisam de estmtr_val ainda presente como auxiliar)
     df = features_espaco_fase(cfg, df)
     df = features_rede_requisitos(cfg, df, dados["grade"], dados["hist"])
     df = features_concorrencia_horaria(cfg, df, dados)
 
     df.drop(columns=["estmtr_val", "nummtr_total"], inplace=True, errors="ignore")
 
-    # Ordenação final + saída
+    # Ordenação final + remoção de colunas que vazam o alvo (inclui o
+    # ``nummtr_max`` cru e as ``ocup_d+*`` que o geraram).
     df = df.sort_values(["ano_sem", "coddis", "sufixo", "codtur"]).reset_index(
         drop=True
     )
@@ -998,6 +1071,7 @@ def montar_dataset(
         f"\nDataset salvo em {cfg.saida} ({len(df)} turmas, {len(df.columns)} colunas)"
     )
     print("Colunas alvo:", [c for c in COLUNAS_ALVO if c in df.columns])
+
     return df
 
 
