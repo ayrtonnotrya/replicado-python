@@ -11,6 +11,7 @@ python = "^3.14"
 sqlalchemy = "^2.0.45"
 pymssql = "^2.3.10"
 python-dotenv = "^1.2.1"
+pandas = "^3.0.5"
 
 
 [tool.poetry.group.dev.dependencies]
