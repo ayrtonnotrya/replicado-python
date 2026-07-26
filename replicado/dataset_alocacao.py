@@ -12,7 +12,7 @@ tabelas auxiliares ainda não cacheadas, com barra de progresso tqdm):
 
 1.  ``carregar_dados``      — resgata/cacheia TURMAGR, HISTESCOLARGR e as
                               tabelas auxiliares (GRADECURRICULAR, OCUPTURMA,
-                              PROGRAMAGR, HABILPROGGR, MINISTRANTE,
+                              PROGRAMAGR, HABILPROGGR, HABILITACAOGR, MINISTRANTE,
                               DETTURMAGR, DISCIPLINAGR, DISCIPGRCODIGO,
                               PERIODOHORARIO, CURSOGR).
 2.  ``reconstruir_estmtr``    — ``estmtr`` histórico (regra
@@ -35,7 +35,11 @@ tabelas auxiliares ainda não cacheadas, com barra de progresso tqdm):
                               modelo aprende o fator de correção da estimativa
                               institucional.
 5.  ``features_*``          — base + histórico + demanda + professor/horário
-                              + ingressantes; mais as features **avançadas**
+                              + ingressantes; mais features de **vagas do
+                              curso** (``vagas_curso_<codcur>`` e
+                              ``vagas_curso_<codcur>_faltam`` reconstruídas de
+                              HABILITACAOGR por datas de vigência, com
+                              continuidade passada); e as features **avançadas**
                               (Módulos 2-4: espaço de fase do ``estmtr``,
                               pressão de represamento, métricas de rede,
                               concorrência horária, atratividade docente).
@@ -301,6 +305,14 @@ def carregar_dados(cfg: DatasetConfig, forcar: bool = False) -> dict[str, pd.Dat
             f"INNER JOIN CURSOGR CS ON HP.codcur = CS.codcur "
             f"WHERE CS.codclg = {cod}",
         ),
+        (
+            "habilit",
+            f"SELECT H.codcur, H.codhab, H.nomhab, H.numvaghab, H.numvaghabcpl, "
+            f"H.numvaghabcvn, H.dtaatvhab, H.dtadtvhab "
+            f"FROM HABILITACAOGR H "
+            f"INNER JOIN CURSOGR C ON H.codcur = C.codcur "
+            f"WHERE C.codclg = {cod}",
+        ),
     ]
     for chave, query in tqdm(definicoes, desc="Carga aux", unit="tab"):
         c = cache / f"aux_{chave}_{cod}.pkl"
@@ -321,6 +333,15 @@ def carregar_dados(cfg: DatasetConfig, forcar: bool = False) -> dict[str, pd.Dat
         hp["dtaclcgru"] = pd.to_datetime(hp["dtaclcgru"], errors="coerce")
         hp["dtaing"] = pd.to_datetime(hp["dtaing"], errors="coerce")
     dados["habilprog"] = hp
+
+    # datas de vigência das habilitações (período ativo p/ reconstrução de
+    # vagas do curso por ano).
+    hb = dados.get("habilit")
+    if hb is not None and len(hb):
+        hb = hb.copy()
+        hb["dtaatvhab"] = pd.to_datetime(hb["dtaatvhab"], errors="coerce")
+        hb["dtadtvhab"] = pd.to_datetime(hb["dtadtvhab"], errors="coerce")
+        dados["habilit"] = hb
     return dados
 
 
@@ -482,45 +503,101 @@ def features_base(
 
 
 def features_historico(cfg: DatasetConfig, t: pd.DataFrame) -> pd.DataFrame:
-    """Perfil histórico reescrito em função de ``estmtr`` (sem ``nummtr``).
+    """Perfil histórico com "verdade terrestre" defasada e janelas deslizantes.
 
-    Como o alvo é ``delta = nummtr_max - estmtr``, qualquer estatística que
-    use ``nummtr_total``/``nummtr_max`` vazia o alvo. Reinterpretamos todas
-    as séries em função do proxy ``estmtr_val`` (disponível no Dia D),
-    computadas APENAS com semestres passados (``.shift(1).expanding()``):
+    O alvo é ``delta = nummtr_max - estmtr``. A versão anterior evitava
+    ``nummtr``/``delta`` a todo custo (apenas ``estmtr_val``), exagerando no
+    conservadorismo. Aqui reintroduzimos o passado CONSOLIDADO de forma
+    segura:
 
-    - ``media/max_hist_estmtr_(sufixo|dis)`` — nível histórico do proxy. Faz
-      sentido: são a "memória" do tamanho típico da turma segundo o Júpiter;
-      - ``hist_taxa_estouro`` — frequência com que o ``estmtr`` passado
-      ULTRAPASSOU as vagas reais. Mede o quão agressivo o proxy tem sido
-      frente à oferta de vagas (não envolve ``nummtr``).
-    - ``hist_max_excesso`` — maior valor de ``estmtr - vagas_reais`` no
-      passado (proxy de "pior excesso já sinalizado pelo Júpiter").
+    - **Lags t-1 / t-2** de ``delta`` e ``nummtr_max`` (verdade terrestre
+      defasada). A linhagem temporal de uma sala (na USP) é a junção
+      disciplina+turma, então o agrupamento ANTES do ``.shift()`` é
+      obrigatoriamente ``['coddis', 'sufixo']``, ordenado por ``ano_sem``.
+      O ``.shift()`` impede qualquer vazamento do semestre corrente.
+    - **Janelas deslizantes** (``rolling(window=3, min_periods=1)``) no
+      lugar de ``.expanding()`` — dilui menos a tendência recente.
+    - ``media_rolling_nummtr_max_3sem`` — tendência real baseada no
+      consolidado passado (lagged), não no proxy ``estmtr``.
+    ``delta``/``nummtr_max`` crus permanecem apenas como insumo dos lags e
+    são descartados a jusante (``COLUNAS_VAZAMENTO``); os lags viram feature.
     """
     if "estmtr_val" not in t.columns:
         return t.copy()
     df = t.sort_values(["coddis", "sufixo", "ano_sem"]).reset_index(drop=True)
 
+    # --- Lags (verdade terrestre defasada) -----------------------------------
+    # Agrupamento OBRIGATÓRIO por [coddis, sufixo] (linhagem da sala) ANTES do
+    # .shift(): garante zero vazamento do semestre corrente. Ordenação por
+    # ano_sem fora do grupo assegura que shift(1)=semestre imediatamente
+    # anterior e shift(2)=mesmo semestre letivo do ano anterior (sazonal).
+    # Agregamos por (coddis, sufixo, ano_sem) antes do shift para tolerar
+    # múltiplas turmas da mesma linhagem num mesmo semestre.
+    lag_cols = []
+    if "delta" in df.columns:
+        lag_cols.append("delta")
+    if "nummtr_max" in df.columns:
+        lag_cols.append("nummtr_max")
+    if lag_cols:
+        agg_sem = (
+            df.groupby(["coddis", "sufixo", "ano_sem"], sort=False)[lag_cols]
+            .mean()
+            .sort_index()
+            .reset_index()
+        )
+        for col in lag_cols:
+            g = agg_sem.groupby(["coddis", "sufixo"], sort=False)[col]
+            agg_sem[f"{col}_t1"] = g.shift(1)  # semestre imediatamente anterior
+            agg_sem[f"{col}_t2"] = g.shift(2)  # sazonal: mesmo semestre ano anterior
+        df = df.merge(
+            agg_sem[
+                ["coddis", "sufixo", "ano_sem"]
+                + [f"{c}_t1" for c in lag_cols]
+                + [f"{c}_t2" for c in lag_cols]
+            ],
+            on=["coddis", "sufixo", "ano_sem"],
+            how="left",
+        )
+        for c in [f"{c}_{k}" for c in lag_cols for k in ("t1", "t2")]:
+            df[c] = df[c].fillna(0)
+
+    # --- Janelas deslizantes (rolling) no lugar de expanding -----------------
+    # Tendência recente: janela fixa de 3 semestres (min_periods=1 para os
+    # primórdios). Lag de 1 via .shift(1) exclui o próprio semestre.
     g_suf = df.groupby(["coddis", "sufixo"], sort=False)["estmtr_val"]
-    df["media_hist_sufixo"] = g_suf.transform(lambda s: s.shift(1).expanding().mean())
-    df["max_hist_sufixo"] = g_suf.transform(lambda s: s.shift(1).expanding().max())
+    df["media_hist_sufixo"] = g_suf.transform(
+        lambda s: s.shift(1).rolling(window=3, min_periods=1).mean()
+    )
+    df["max_hist_sufixo"] = g_suf.transform(
+        lambda s: s.shift(1).rolling(window=3, min_periods=1).max()
+    )
 
     g_dis = df.sort_values(["coddis", "ano_sem"]).groupby("coddis", sort=False)[
         "estmtr_val"
     ]
     df = df.sort_values(["coddis", "ano_sem"]).reset_index(drop=True)
-    df["media_hist_dis"] = g_dis.transform(lambda s: s.shift(1).expanding().mean())
-    df["max_hist_dis"] = g_dis.transform(lambda s: s.shift(1).expanding().max())
+    df["media_hist_dis"] = g_dis.transform(
+        lambda s: s.shift(1).rolling(window=3, min_periods=1).mean()
+    )
+    df["max_hist_dis"] = g_dis.transform(
+        lambda s: s.shift(1).rolling(window=3, min_periods=1).max()
+    )
 
     df = df.sort_values(["coddis", "sufixo", "ano_sem"]).reset_index(drop=True)
     df["media_hist_estmtr"] = df["media_hist_sufixo"].fillna(df["media_hist_dis"])
     df["max_hist_estmtr"] = df["max_hist_sufixo"].fillna(df["max_hist_dis"])
 
+    # Tendência REAL baseada no consolidado passado (lagged). Agrupada por
+    # [coddis, sufixo] + .shift(1) fora do grupo => imune a vazamento.
+    if "nummtr_max" in df.columns:
+        g_max = df.groupby(["coddis", "sufixo"], sort=False)["nummtr_max"]
+        df["media_rolling_nummtr_max_3sem"] = g_max.transform(
+            lambda s: s.shift(1).rolling(window=3, min_periods=1).mean()
+        ).fillna(df["media_hist_estmtr"].fillna(0))
+
     # Resíduo do proxy contra sua própria média histórica (passada): sinal
     # puro de estmtr, sem nummtr — diferença (não razão, que degeneraria).
-    df["estmtr_residuo_media"] = (
-        df["estmtr_val"] - df["media_hist_estmtr"]
-    ).fillna(0)
+    df["estmtr_residuo_media"] = (df["estmtr_val"] - df["media_hist_estmtr"]).fillna(0)
 
     df["_over"] = (df["estmtr_val"] > df["vagas_reais"]).astype(int)
     df["_exc"] = np.where(
@@ -530,10 +607,14 @@ def features_historico(cfg: DatasetConfig, t: pd.DataFrame) -> pd.DataFrame:
     )
     grp = df.groupby(["coddis", "sufixo"], sort=False)
     df["hist_taxa_estouro"] = (
-        grp["_over"].transform(lambda s: s.shift(1).expanding().mean()).fillna(0)
+        grp["_over"]
+        .transform(lambda s: s.shift(1).rolling(window=3, min_periods=1).mean())
+        .fillna(0)
     )
     df["hist_max_excesso"] = (
-        grp["_exc"].transform(lambda s: s.shift(1).expanding().max()).fillna(0)
+        grp["_exc"]
+        .transform(lambda s: s.shift(1).rolling(window=3, min_periods=1).max())
+        .fillna(0)
     )
     df.drop(
         columns=[
@@ -655,6 +736,139 @@ def _hist_com_ano_sem(hist: pd.DataFrame) -> pd.DataFrame:
     return h
 
 
+def _vagas_curso_no_ano(hab: pd.DataFrame, cod: int, ano: int) -> int:
+    """Total de vagas cadastrais do ``codcur`` vigentes em ``1o/jul/ano``.
+
+    Soma ``numvaghab + numvaghabcpl + numvaghabcvn`` de TODAS as habilitações
+    (qualquer ``codhab``) ativas no corte. A reconstrução por datas de
+    vigência (``dtaatvhab`` / ``dtadtvhab``) garante continuidade para o
+    passado: anos sem registro em ``HABILVAGA`` recebem o snapshot cadastral
+    daquele ano. Cursos só mudam de habilitações — raramente surgem novos
+    —  então o histórico é razoavelmente estável.
+    """
+    corte = pd.Timestamp(year=ano, month=7, day=1)
+    h = hab[
+        (hab["codcur"] == cod)
+        & (hab["dtaatvhab"].isna() | (hab["dtaatvhab"] <= corte))
+        & (hab["dtadtvhab"].isna() | (hab["dtadtvhab"] > corte))
+    ]
+    return int(h["vag_total"].sum()) if len(h) else 0
+
+
+def features_vagas_curso(
+    cfg: DatasetConfig, t: pd.DataFrame, dados: dict[str, pd.DataFrame]
+) -> pd.DataFrame:
+    """Vagas do curso (soma dos ``codhab`` vigentes no ano) e sinal de
+    "alunos que faltam se matricular" no Dia D.
+
+    Para cada ``codcur`` ativo HOJE (≥1 habilitação sem ``dtadtvhab`` preenchida
+    ou com ``dtadtvhab`` futura), cria duas colunas por turma:
+
+    - ``vagas_curso_<codcur>`` — soma das vagas cadastrais das habilitações
+      vigentes em ``1o/jul/ano`` da turma. Reconstruído de
+      ``HABILITACAOGR`` (datas de vigência) → dá continuidade para o passado
+      mesmo onde ``HABILVAGA`` tem buracos (ex.: 2014-2023). Anos sem
+      habilitação ativa (curso só cadastrado a meio da janela, ex.: 45052 a
+      partir de 2016, 45062 a partir de 2022) recebem a MÉDIA dos anos com
+      dado não-zero — filosofia "cursos só mudam, raramente surgem novos".
+      Zero para turmas cuja disciplina não pertença à grade do curso.
+
+    - ``vagas_curso_<codcur>_faltam = max(0, vagas_curso_<codcur> - estmtr)``
+      — estimativa de "alunos que ainda faltam se matricular"ptions no Dia D:
+      o modelo enxerga o quanto o proxy ``estmtr`` (alunos já inscritos)
+      deixa de completar a oferta do curso. Não vaza o alvo: vagas é cadastral
+      e ``estmtr`` é a feature (proxy do Júpiter disponível no Dia D).
+
+    Restrito aos ``cfg.top_cursos`` cursos ativos com mais turmas servidas no
+    escopo (inativos/excluídos hoje não recebem colunas, mesmo que tenham tido
+    vagas em 2010, conforme acordado com o usuário).
+    """
+    df = t.copy()
+    hab = dados.get("habilit")
+    grade = dados.get("grade")
+    if hab is None or not len(hab) or grade is None or not len(grade):
+        return df
+
+    hb = hab.copy()
+    hb["codcur"] = pd.to_numeric(hb["codcur"], errors="coerce")
+    hb = hb.dropna(subset=["codcur"])
+    hb["codcur"] = hb["codcur"].astype(int)
+    for c in ("numvaghab", "numvaghabcpl", "numvaghabcvn"):
+        hb[c] = pd.to_numeric(hb[c], errors="coerce").fillna(0)
+    hb["vag_total"] = hb["numvaghab"] + hb["numvaghabcpl"] + hb["numvaghabcvn"]
+
+    # Cursos ativos HOJE (≥1 habilitação vigente).
+    hoje = pd.Timestamp.now().normalize()
+    ativas_hoje = hb[
+        (hb["dtaatvhab"].isna() | (hb["dtaatvhab"] <= hoje))
+        & (hb["dtadtvhab"].isna() | (hb["dtadtvhab"] > hoje))
+    ]
+    codcurs_ativos = sorted(ativas_hoje["codcur"].astype(int).unique().tolist())
+    if not codcurs_ativos:
+        return df
+
+    # Grade: (codcur, coddis) — qualquer tipobg (obrigatória + optativa).
+    g = grade.copy()
+    g["codcur"] = pd.to_numeric(g["codcur"], errors="coerce")
+    g = g.dropna(subset=["codcur"])
+    g["codcur"] = g["codcur"].astype(int)
+    g = g.dropna(subset=["coddis"])
+    g_pairs = g.drop_duplicates(["codcur", "coddis"])[["codcur", "coddis"]]
+    codcurs_grade = set(g_pairs["codcur"].unique())
+    candidatos = [c for c in codcurs_ativos if c in codcurs_grade]
+    if not candidatos:
+        return df
+
+    # Top_cursos ativos com mais turmas servidas no dataset.
+    discis_set = set(df["coddis"].unique())
+    disc_por_cur: dict[int, set[str]] = {}
+    for c in candidatos:
+        disc_por_cur[c] = set(g_pairs.loc[g_pairs["codcur"] == c, "coddis"])
+    contagem = {c: len(disc_por_cur[c] & discis_set) for c in candidatos}
+    codcurs = sorted(contagem, key=lambda c: contagem[c], reverse=True)[
+        : cfg.top_cursos
+    ]
+    # Reaproveita apenas os conjuntos de código de disciplinas dos escolhidos.
+    disc_por_cur = {c: disc_por_cur[c] for c in codcurs}
+
+    # Reconstrói vagas por (codcur, ano) — cache p/ reuso entre colunas do
+    # mesmo curso. Vetoriza por mapa ano -> vagas.
+    cache_vagas: dict[tuple[int, int], int] = {}
+    anos_df = sorted(
+        pd.to_numeric(df["ano"], errors="coerce").dropna().astype(int).unique()
+    )
+    for c in codcurs:
+        for ano in anos_df:
+            cache_vagas[(c, int(ano))] = _vagas_curso_no_ano(hb, c, int(ano))
+        # Preenche anos sem dado cadastral (habilitação só cadastrada a meio
+        # da janela, ex.: 45052 a partir de 2016, 45062 a partir de 2022) com
+        # a MÉDIA dos anos com dado não-zero — filosofia "cursos só mudam,
+        # raramente surgem novos". Preserva a variação temporal onde há sinal
+        # (ex.: 45070: 128→143→113 permanece intacto).
+        valores = [cache_vagas[(c, int(ano))] for ano in anos_df]
+        nao_zero = [v for v in valores if v > 0]
+        if nao_zero and 0 in valores:
+            media = int(round(sum(nao_zero) / len(nao_zero)))
+            for ano in anos_df:
+                if cache_vagas[(c, int(ano))] == 0:
+                    cache_vagas[(c, int(ano))] = media
+
+    for c in codcurs:
+        serve = df["coddis"].isin(disc_por_cur[c])
+        vagas_map = {ano: cache_vagas[(c, int(ano))] for ano in anos_df}
+        vagas_series = (
+            pd.to_numeric(df["ano"], errors="coerce")
+            .map(vagas_map)
+            .fillna(0)
+            .astype(int)
+        )
+        col_v = f"vagas_curso_{c}"
+        col_f = f"vagas_curso_{c}_faltam"
+        df[col_v] = np.where(serve, vagas_series, 0).astype(int)
+        df[col_f] = np.maximum(0, df[col_v] - df["estmtr_val"].fillna(0)).astype(int)
+    return df
+
+
 def features_professor_horario(
     cfg: DatasetConfig, t: pd.DataFrame, dados: dict[str, pd.DataFrame]
 ) -> pd.DataFrame:
@@ -695,16 +909,55 @@ def features_professor_horario(
         .sort_values(["id_prof", "ano_sem"])
     )
     serie_sem["media_hist_prof"] = serie_sem.groupby("id_prof")["estmtr_val"].transform(
-        lambda s: s.shift(1).expanding().mean()
+        lambda s: s.shift(1).rolling(window=3, min_periods=1).mean()
     )
+    # Semestres consecutivos que o docente atual leciona a disciplina: mede a
+    # fidelidade do docente-disciplina. DIFERENTE da regra de ouro da linhagem
+    # da sala, aqui o agrupamento é por [coddis, id_prof] (não sufixo), pois
+    # a relação avaliada é docente X disciplina. Ordenado por ano_sem, conta a
+    # sequência vigente de semestres contíguos (sem gap) terminada no semestre
+    # anterior (lag de 1), evitando vazamento do semestre corrente.
+    semestres = mp[["id_prof", "coddis", "ano_sem"]].drop_duplicates()
+    semestres = semestres.sort_values(["coddis", "id_prof", "ano_sem"])
+    grp_dp = semestres.groupby(["coddis", "id_prof"], sort=False)
+    semestres["ano_sem_prev"] = grp_dp["ano_sem"].shift(1)
+    # Passo esperado em ano_sem USP: 1 (1S->2S mesmo ano) ou 9 (2S ano N ->
+    # 1S ano N+1). Fora disso há gap e reiniciamos a contagem.
+    delta_sem = semestres["ano_sem"] - semestres["ano_sem_prev"]
+    semestres["_contiguo"] = delta_sem.isin([1, 9]) & semestres["ano_sem_prev"].notna()
+    semestres["_run_grp"] = (~semestres["_contiguo"]).cumsum()
+    semestres["semestres_consecutivos_prof"] = (
+        semestres.groupby(["coddis", "id_prof", "_run_grp"], sort=False).cumcount() + 1
+    )
+    # Lag de 1 para não usar o próprio semestre da turma corrente (evita
+    # vazamento de "este docente está aqui AGORA", sinal que correlaciona com
+    # o alvo). O t-1 já reflete a fidelidade passada.
+    semestres["semestres_consecutivos_prof"] = (
+        grp_dp["semestres_consecutivos_prof"].shift(1).fillna(0).astype(int)
+    )
+    prof_fidel = semestres[
+        ["coddis", "id_prof", "ano_sem", "semestres_consecutivos_prof"]
+    ]
+    # Repassa o contador de volta ao mp e agrega por turma.
+    mp = mp.merge(prof_fidel, on=["coddis", "id_prof", "ano_sem"], how="left")
+    fid_por_turma = mp.groupby(["coddis", "codtur", "ano_sem"], as_index=False)[
+        "semestres_consecutivos_prof"
+    ].max()
     forca = (
-        serie_sem.merge(mp[["id_prof", "coddis", "codtur", "ano_sem"]],
-                         on=["id_prof", "ano_sem"], how="inner")
+        serie_sem.merge(
+            mp[["id_prof", "coddis", "codtur", "ano_sem"]],
+            on=["id_prof", "ano_sem"],
+            how="inner",
+        )
         .groupby(["coddis", "codtur", "ano_sem"])["media_hist_prof"]
         .mean()
         .reset_index()
     )
     df = df.merge(forca, on=["coddis", "codtur", "ano_sem"], how="left")
+    df = df.merge(fid_por_turma, on=["coddis", "codtur", "ano_sem"], how="left")
+    df["semestres_consecutivos_prof"] = (
+        df["semestres_consecutivos_prof"].fillna(0).astype(int)
+    )
     # Delta de atratividade do docente entre a turma atual e o semestre anterior
     df = df.sort_values(["coddis", "sufixo", "ano_sem"])
     df["delta_atratividade_docente"] = (
@@ -758,14 +1011,12 @@ def features_ingressantes(
 # Features avançadas (Módulos 2-4: espaço de fase, rede, concorrência, sincronia)
 # ---------------------------------------------------------------------------
 def features_espaco_fase(cfg: DatasetConfig, t: pd.DataFrame) -> pd.DataFrame:
-    """Sinais de fase (velocidade/volatilidade) reescritos em função de
-    ``estmtr`` apenas — sem ``nummtr_max``.
+    """Sinais de fase (velocidade/volatilidade) da linhagem da sala.
 
-    O antigo resíduo ``δ = nummtr_max - estmtr`` era LAGGED e portanto não
-    vazava o alvo do semestre corrente, mas o usuário optou pela regra mais
-    conservadora de **nenhuma** feature derivada de ``nummtr`` (sequer
-    lagged), para isolar totalmente o alvo ``delta``. As contas que
-    sobrevivem têm interpretação autossuficiente em ``estmtr``:
+    Séries cronológicas de lotação ordenadas por ``ano_sem`` e agrupadas por
+    ``['coddis', 'sufixo']`` (regra de ouro da linhagem). O ``.shift(1)``
+    aplicado ANTES do ``.rolling()`` exclui o semestre corrente do cascalho
+    histórico, garantindo imunidade a vazamento do alvo ``delta``.
 
     - ``var_pct_estmtr`` — ``Δestmtr / estmtr_passado`` (tendência do proxy
       entre semestres consecutivos lagged). Não é razão ``nummtr/estmtr``
@@ -773,24 +1024,28 @@ def features_espaco_fase(cfg: DatasetConfig, t: pd.DataFrame) -> pd.DataFrame:
       temporais distintos da mesma série.
     - ``d_estmtr_dt_t1`` — diferença (variação absoluta) do ``estmtr`` entre
       os dois semestres anteriores (velocidade do proxy, sem normalização).
-    - ``volatilidade_estmtr`` — desvio-padrão expansivo do ``estmtr``
-      passado: quão estável é o proxy da turma ao longo do tempo.
+    - ``volatilidade_estmtr`` — desvio-padrão *deslizante* (janela 3,
+      ``min_periods=1``) do ``estmtr`` passado: quão estável é o proxy da
+      linhagem no curto prazo (substitui o ``expanding().std()`` que
+      carregava peso muito antigo e diluía a tendência recente).
     """
     if "estmtr_val" not in t.columns:
         return t.copy()
     df = t.sort_values(["coddis", "sufixo", "ano_sem"]).reset_index(drop=True)
+    # Agrupamento por [coddis, sufixo] ANTES do .shift(): linhagem da sala.
     g = df.groupby(["coddis", "sufixo"], sort=False)
-    prev_est = g["estmtr_val"].shift(1)
+    prev_est = g["estmtr_val"].shift(1)  # exclui o semestre corrente
     # Variação percentual: Δ / proxy_passado (denominador ≠ 0). Não degenera.
     df["var_pct_estmtr"] = (
         (df["estmtr_val"] - prev_est) / prev_est.replace(0, np.nan)
     ).fillna(0)
     # Velocidade absoluta lagged — puro estmtr.
     df["d_estmtr_dt_t1"] = prev_est.diff().fillna(0)
-    # Volatilidade expansiva do proxy.
+    # Volatilidade deslizante (window=3) do proxy passado: substitui o
+    # .expanding().std() que diluía a tendência recente.
     df["volatilidade_estmtr"] = (
         g["estmtr_val"]
-        .transform(lambda s: s.shift(1).expanding().std())
+        .transform(lambda s: s.shift(1).rolling(window=3, min_periods=1).std())
         .fillna(0)
     )
     return df
@@ -1065,6 +1320,7 @@ def montar_dataset(
     # Histórico + demanda + prof/horário + ingressantes (todos em estmtr)
     df = features_historico(cfg, df)
     df = features_demanda(cfg, df, dados["hist"], dados)
+    df = features_vagas_curso(cfg, df, dados)
     df = features_professor_horario(cfg, df, dados)
     df = features_ingressantes(cfg, df, dados["grade"])
 

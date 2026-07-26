@@ -32,15 +32,23 @@ Ordem de execução:
    Agnóstico à unidade: escopo via `DatasetConfig` (`.env`
    `REPLICADO_CODUNDCLG`, `REPLICADO_PREFIXOS_DISC`, etc.) ou flags do CLI.
    Extrai tabelas auxiliares (GRADECURRICULAR, OCUPTURMA, PROGRAMAGR,
-   HABILPROGGR, MINISTRANTE, DETTURMAGR, DISCIPLINAGR, DISCIPGRCODIGO,
-   PERIODOHORARIO, CURSOGR) com streaming tqdm (COUNT + chunks via
-   `DB.iter_chunks`) e cacheia em `temp/cache_maquina_tempo/aux_*_<cod>.pkl`.
+   HABILPROGGR, HABILITACAOGR, MINISTRANTE, DETTURMAGR, DISCIPLINAGR,
+   DISCIPGRCODIGO, PERIODOHORARIO, CURSOGR) com streaming tqdm (COUNT +
+   chunks via `DB.iter_chunks`) e cacheia em
+   `temp/cache_maquina_tempo/aux_*_<cod>.pkl`.
    Gera 3 alvos: `nummtr` (soma das 5 vias), `pico_max` (T_pico) e `estmtr`
    (proxy/baseline).Features avançadas: espaço de fase (resíduo/volatilidade
    lagged), pressão de represamento, métricas topológicas (betweenness/
    PageRank do grafo de pré-requisitos), concorrência horária e sincronia de
    bloco. Sem vazamento: contadores consolidados (numins*, nummtr* cru,
-   ocup_d+*) são descartados via `COLUNAS_VAZAMENTO`.
+   ocup_d+*) são descartados via `COLUNAS_VAZAMENTO`. Features de vagas do
+   curso (`vagas_curso_<codcur>` e `vagas_curso_<codcur>_faltam`): só cursos
+   ativos hoje recebem colunas; vagas reconstruídas de `HABILITACAOGR` por
+   datas de vigência (`dtaatvhab`/`dtadtvhab` em 1/jul do ano da turma),
+   somando `numvaghab+numvaghabcpl+numvaghabcvn` de todos `codhab` vigentes
+   — dá continuidade ao passado mesmo onde `HABILVAGA` tem buracos
+   (2014-2023). `_faltam = max(0, vagas_curso - estmtr)` sinaliza alunos
+   ainda não inscritos no Dia D (sem vazar o alvo `delta`).
 
 ## Regras descobertas (engenharia reversa — NÃO re-derivar)
 
