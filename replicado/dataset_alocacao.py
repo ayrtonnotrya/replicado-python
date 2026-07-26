@@ -1007,6 +1007,90 @@ def features_ingressantes(
     return df
 
 
+def features_sazonalidade(cfg: DatasetConfig, t: pd.DataFrame) -> pd.DataFrame:
+    """Feature de eco anual (autocorrelação Lag 2): ``flag_fora_de_epoca``.
+
+    O modelo sofre de autocorrelação no Lag 2 (eco anual): uma disciplina
+    ofertada num semestre atípico para ela costuma ter ocupação
+    deslocada do histórico. Esta feature diz ao modelo, **sem vazar o
+    semestre corrente**, se a turma está sendo dada fora da "época
+    típica" da disciplina.
+
+    Lógica (blindada contra data leakage temporal):
+
+    1. Agrega, por ``(coddis, ano_sem)``, a contagem de turmas em ``1S`` e
+       ``2S`` — colapsando múltiplas turmas da mesma linhagem num mesmo
+       semestre em UM ponto temporal, para que a barreira "strictly past"
+       exclua o semestre inteiro e não apenas as linhas anteriores
+       (ordenação arbitrária dentro do mesmo ``ano_sem``).
+    2. Soma cumulativa (``cumsum``) de "1S"/"2S" por ``coddis`` ordenado por
+       ``ano_sem``. Em seguida ``shift(1)`` DENTRO do grupo ``coddis`` exclui
+       o próprio semestre da contagem: a "época típica" de uma turma em
+       ``ano_sem`` S é calculada só sobre semestres ``< S``. Isso é a janela
+       expansiva que respeita a barreira temporal — o semestre da própria
+       linha NUNCA é usado para calcular a moda.
+    3. ``sem_tipo_tipico`` = ``"1S"`` se ``cum_1S_past > cum_2S_past``,
+       ``"2S"`` se ``cum_2S_past > cum_1S_past``, ``""`` em caso de empate
+       (incluindo ``0×0``, i.e., primeira vez que a disciplina é dada).
+    4. ``flag_fora_de_epoca = 1`` se ``sem_tipo`` da turma difere do
+       ``sem_tipo_tipico``; ``0`` caso contrário (época típica OU primeira
+       vez da disciplina OU ``sem_tipo`` ausente).
+
+    Como usa só ``coddis``/``ano_sem``/``sem_tipo`` (derivados do ``codtur``
+    via ``filtrar_turmas``), não toca em ``nummtr``/``delta`` — não vaza o
+    alvo.
+    """
+    df = t.copy()
+    if "sem_tipo" not in df.columns or "ano_sem" not in df.columns:
+        df["flag_fora_de_epoca"] = 0
+        return df
+
+    # 1) Contagens por (coddis, ano_sem) — uma linha por semestre oferecido.
+    #    ``observed=False`` inclui (coddis, ano_sem) sem turmas de um dos
+    #    tipos; preenchemos depois com 0.
+    cont = (
+        df.groupby(["coddis", "ano_sem", "sem_tipo"], sort=False, observed=False)
+        .size()
+        .unstack("sem_tipo", fill_value=0)
+        .reset_index()
+    )
+    for c in ("1S", "2S"):
+        if c not in cont.columns:
+            cont[c] = 0
+        cont[c] = pd.to_numeric(cont[c], errors="coerce").fillna(0).astype(int)
+
+    # 2) Cumsum inclusivo por coddis ordenado por ano_sem, depois shift(1)
+    #    DENTRO do mesmo grupo para excluir o semestre corrente. A barreira
+    #    "strictly past" passa a valer no nível do semestre inteiro.
+    cont = cont.sort_values(["coddis", "ano_sem"], kind="mergesort").reset_index(
+        drop=True
+    )
+    g = cont.groupby("coddis", sort=False)
+    cont["_c1"] = g[("1S")].cumsum()
+    cont["_c2"] = g[("2S")].cumsum()
+    cont["cum_1S_past"] = g["_c1"].shift(1).fillna(0).astype(int)
+    cont["cum_2S_past"] = g["_c2"].shift(1).fillna(0).astype(int)
+
+    # 3) Época típica: argmax das contagens passadas; "" no empate/primeira vez.
+    cont["sem_tipo_tipico"] = np.where(
+        cont["cum_1S_past"] > cont["cum_2S_past"],
+        "1S",
+        np.where(cont["cum_2S_past"] > cont["cum_1S_past"], "2S", ""),
+    )
+    tipico = cont[["coddis", "ano_sem", "sem_tipo_tipico"]]
+
+    # 4) Flag por turma: sem_tipo atual != época típica (e ambos definidos).
+    df = df.merge(tipico, on=["coddis", "ano_sem"], how="left")
+    df["sem_tipo_tipico"] = df["sem_tipo_tipico"].fillna("")
+    df["flag_fora_de_epoca"] = (
+        df["sem_tipo"].notna()
+        & (df["sem_tipo_tipico"] != "")
+        & (df["sem_tipo"] != df["sem_tipo_tipico"])
+    ).astype(int)
+    df.drop(columns=["sem_tipo_tipico"], inplace=True, errors="ignore")
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Features avançadas (Módulos 2-4: espaço de fase, rede, concorrência, sincronia)
 # ---------------------------------------------------------------------------
@@ -1134,6 +1218,33 @@ def features_rede_requisitos(
             # maior ``ano_sem`` oferecido estritamente menor: direction
             # "backward" com allow_exact_matches=False reproduz "shift()
             # sobre a própria série", sem assumir contiguidade de calendário.
+            #
+            # Blindagem anti-vazamento temporal (3 pilares):
+            # 1. Ambas as tabelas estão pré-ordenadas por ``ano_sem``
+            #    (``ofertado`` linha do ``.sort_values("ano_sem")``,
+            #    ``alvos`` linha do ``.sort_values("ano_sem")``) — requisito
+            #    documentado do ``merge_asof``; sem isso o casamento é
+            #    silenciosamente incorreto.
+            # 2. ``allow_exact_matches=False`` garante que o oferecimento
+            #    casado seja ESTRITAMENTE anterior a ``sem_alvo``: mesmo que o
+            #    pré-requisito seja ofertado no MESMO ``ano_sem`` da turma-alvo,
+            #    ele é pulado e buscamos o oferecimento realmente passado. Isso
+            #    fecha a rota de vazamento em que a reprovação do próprio
+            #    semestre-alvo seria usada como feature.
+            #    Disciplinas anuais (oferecidas só em 1S ou só em 2S) são
+            #    tratadas sem artimanhas: o ``backward`` salta os gaps vazios e
+            #    ancora no último oferecimento REAL, por mais antigo que seja.
+            # 3. ``direction="backward"`` +  ``allow_exact_matches=False``
+            #    significa que, se NÃO existe oferecimento prévio do pré-
+            #    requisito (primeira vez que ele é dado, ou só aparece no
+            #    mesmo/depósito do sem_alvo), o merge produz NaN em ``n_rep``.
+            #    O ``fillna(0)`` logo abaixo converte esses casos em pressão
+            #    ZERO — informação honesta ("sem represamento conhecido") e
+            #    não em NaN que quebraria o modelo. Os semestres que TIVERAM
+            #    oferecimento porém com ZERO reprovados já chegaram como 0
+            #    via o ``ofertado["n_rep"].fillna(0)`` anterior, e seguem 0
+            #    aqui — distinguindo "oferecido sem reprovados" de "nunca
+            #    oferecido antes", ambos sem pressão.
             press = pd.merge_asof(
                 alvos,
                 ofertado,
@@ -1366,6 +1477,9 @@ def montar_dataset(
     df = features_vagas_curso(cfg, df, dados)
     df = features_professor_horario(cfg, df, dados)
     df = features_ingressantes(cfg, df, dados["grade"])
+    # Sazonalidade / eco anual (flag_fora_de_epoca) — independe de estmtr,
+    # só precisa de coddis/ano_sem/sem_tipo (presentes desde filtrar_turmas).
+    df = features_sazonalidade(cfg, df)
 
     # Avançadas (precisam de estmtr_val ainda presente como auxiliar)
     df = features_espaco_fase(cfg, df)
