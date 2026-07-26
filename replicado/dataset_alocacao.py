@@ -1081,37 +1081,80 @@ def features_rede_requisitos(
             preds_map[d] = _predecessores(g_req, d)
 
     # Pressão represada por turma: soma de reprovados nos pré-requisitos
-    # diretos no semestre imediatamente anterior (t-1), normalizada pelo
-    # estmtr da própria turma (+1). Usa apenas passado.
+    # diretos no SEU ÚLTIMO oferecimento estritamente anterior a sem_alvo,
+    # normalizada pelas vagas da própria turma(+1). Usa apenas passado.
+    #
+    # Importante: NÃO calcular ``sem_prev`` como o semestre calendário
+    # anterior (1S→2S ano-1, 2S→1S mesmo ano). Muitas disciplinas USP têm
+    # oferecimento anual (só em semestres pares ou ímpares): se o
+    # pré-requisito só abre no 1S e a turma-alvo é 1S do ano seguinte, o
+    # cálculo algébrico olharia o 2S vazio e atribuiria pressão=0. Em vez
+    # disso, varremos a série histórica real de oferecimento de cada
+    # pré-requisito e casamos por ``merge_asof`` (``allow_exact_matches=
+    # False`` → o maior ``ano_sem`` oferecido estritamente menor que o
+    # ``sem_alvo``): equivalente a um ``groupby().shift()`` que respeita os
+    # gaps anuais da disciplina.
     hg = _hist_com_ano_sem(hist) if len(hist) else hist
-    rep_prev: dict[tuple[str, int], int] = {}
-    if len(hg):
-        rset = hg[hg["rstfim"].isin(RSTFM_REPROVACAO)]
-        rset = rset.groupby(["coddis", "ano_sem"]).size().rename("n").reset_index()
-        rmap = {
-            (r["coddis"], int(r["ano_sem"])): int(r["n"]) for _, r in rset.iterrows()
-        }
-        for disc_atual, sem_alvo in df[["coddis", "ano_sem"]].itertuples(index=False):
-            preds = preds_map.get(disc_atual, [])
-            if not preds:
-                continue
-            # Semestre imediatamente anterior (t-1): 1S→2S ano-1, 2S→1S mesmo ano.
-            ano_alvo = sem_alvo // 10
-            sem_tipo_alvo = sem_alvo % 10
-            if sem_tipo_alvo == 1:
-                sem_prev = (ano_alvo - 1) * 10 + 2  # 20231 -> 20222
-            else:
-                sem_prev = ano_alvo * 10 + 1  # 20232 -> 20231
-            if sem_prev < cfg.ano_min * 10:
-                continue
-            press = sum(rmap.get((p, sem_prev), 0) for p in preds)
-            sub = df[(df["ano_sem"] == sem_alvo) & (df["coddis"] == disc_atual)]
-            denom = int(sub["vagas_reais"].iloc[0]) if len(sub) else 1
-            rep_prev[(disc_atual, sem_alvo)] = press / max(denom, 1)
+    rep_prev: dict[tuple[str, int], float] = {}
+    if len(hg) and preds_map:
+        # Série de oferecimento real: um (coddis, ano_sem) por vez que a
+        # disciplina de fato teve turma/inscrição registrada no HISTESCOLARGR.
+        ofertado = (
+            hg[["coddis", "ano_sem"]]
+            .dropna(subset=["ano_sem"])
+            .drop_duplicates()
+            .astype({"ano_sem": int})
+            .query("ano_sem >= @cfg.ano_min * 10")
+            .sort_values("ano_sem", kind="mergesort")
+            .reset_index(drop=True)
+        )
+        # Reprovações por (coddis, ano_sem). Semestre oferecido sem reprovados
+        # → n_rep = 0 (a turma existiu, sob pressão zero — informação válida).
+        rep_df = (
+            hg[hg["rstfim"].isin(RSTFM_REPROVACAO)]
+            .groupby(["coddis", "ano_sem"], sort=False)
+            .size()
+            .rename("n_rep")
+            .reset_index()
+            .astype({"ano_sem": int})
+        )
+        ofertado = ofertado.merge(rep_df, on=["coddis", "ano_sem"], how="left")
+        ofertado["n_rep"] = ofertado["n_rep"].fillna(0).astype(int)
 
-    df["pressao_represada"] = df.set_index(["coddis", "ano_sem"]).index.map(
-        lambda k: rep_prev.get(k, 0.0)
+        # Lista de (disc_alvo, pré-requisito p, sem_alvo) a avaliar.
+        alvos = df[["coddis", "ano_sem"]].drop_duplicates().copy()
+        alvos["preds"] = alvos["coddis"].map(preds_map)
+        alvos = alvos.explode("preds", ignore_index=True).dropna(subset=["preds"])
+        alvos = alvos.rename(columns={"coddis": "disc_alvo", "preds": "coddis"})
+        alvos["ano_sem"] = alvos["ano_sem"].astype(int)
+        alvos = alvos.sort_values("ano_sem", kind="mergesort")
+
+        if len(alvos):
+            # Por pré-requisito ``p`` (group by=coddis), casa ``sem_alvo`` ao
+            # maior ``ano_sem`` oferecido estritamente menor: direction
+            # "backward" com allow_exact_matches=False reproduz "shift()
+            # sobre a própria série", sem assumir contiguidade de calendário.
+            press = pd.merge_asof(
+                alvos,
+                ofertado,
+                on="ano_sem",
+                by="coddis",
+                direction="backward",
+                allow_exact_matches=False,
+            )
+            press["n_rep"] = press["n_rep"].fillna(0).astype(int)
+            # Soma reprovações de todos os pré-requisitos diretos no seu
+            # último oferecimento antes de sem_alvo, por (disc_alvo, sem_alvo).
+            soma = press.groupby(["disc_alvo", "ano_sem"], sort=False)["n_rep"].sum()
+            rep_prev = {(d, int(s)): float(v) for (d, s), v in soma.items()}
+
+    # Normaliza pelas vagas da própria turma-alvo (mínimo 1 para evitar div 0).
+    num = pd.Series(
+        [rep_prev.get((c, s), 0.0) for c, s in zip(df["coddis"], df["ano_sem"], strict=True)],
+        index=df.index,
+        dtype=float,
     )
+    df["pressao_represada"] = num / df["vagas_reais"].clip(lower=1).astype(float)
     return df
 
 
