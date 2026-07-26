@@ -342,6 +342,12 @@ def carregar_dados(cfg: DatasetConfig, forcar: bool = False) -> dict[str, pd.Dat
         hb["dtaatvhab"] = pd.to_datetime(hb["dtaatvhab"], errors="coerce")
         hb["dtadtvhab"] = pd.to_datetime(hb["dtadtvhab"], errors="coerce")
         dados["habilit"] = hb
+
+    # Tabelas auxiliares dos macro-sensores (CALENDGR, REQUERIMENTOGR e
+    # HISTPROGGR filtradas IME). Ver :mod:`replicado.dataset_macrosensores`.
+    from .dataset_macrosensores import carregar_macrosensores
+
+    carregar_macrosensores(cfg, dados, forcar=forcar)
     return dados
 
 
@@ -1485,6 +1491,11 @@ def montar_dataset(
     df = features_espaco_fase(cfg, df)
     df = features_rede_requisitos(cfg, df, dados["grade"], dados["hist"])
     df = features_concorrencia_horaria(cfg, df, dados)
+
+    # Macro-sensores (sinais globais de crise/caos por semestre).
+    from .dataset_macrosensores import features_macrosensores
+
+    df = features_macrosensores(cfg, df, dados)
 
     df.drop(columns=["estmtr_val", "nummtr_total"], inplace=True, errors="ignore")
 
