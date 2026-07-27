@@ -327,7 +327,7 @@ def _macro_gap_calendario(
         flags.append(source)
     return (
         pd.Series(gaps, index=df.index, dtype=float),
-        pd.Series(flags, index=df.index, dtype="object"),
+        pd.Series(flags, index=df.index, dtype=float),
     )
 
 
