@@ -63,6 +63,10 @@ Uso
     poetry run python scripts/build_dataset.py
     poetry run python scripts/build_dataset.py --codundclg 45 --prefixos MAC MAT
     REPLICADO_PREFIXOS_DISC="MAC,MAT,MAE" poetry run python scripts/build_dataset.py
+
+    O colegiado (``codundclg``) e os prefixos de disciplina (``prefixos``) NÃO
+    têm fallback: devem estar no ``.env`` (``REPLICADO_CODUNDCLG`` /
+    ``REPLICADO_PREFIXOS_DISC``) ou passados no CLI. Ausência => erro explícito.
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -88,11 +93,12 @@ from .connection import DB  # noqa: E402
 CACHE_DIR = Path("temp/cache_maquina_tempo")
 SAIDA_DEFAULT = Path("temp/dataset_alocacao.csv")
 
-# Defaults compatíveis com o IME-USP (escobalcados na engenharia reversa).
-DEFAULT_PREFIXOS = ("45", "MAC", "MAE", "MAT", "MAP", "MPM")
+# Defaults genéricos (não atrelados a nenhuma unidade). Colegiado e prefixos
+# de disciplina NÃO têm default: devem vir do ``.env`` (``from_env``) ou do
+# CLI, e a ausência levanta ``ValueError``.
 DEFAULT_SUFIXO_MIN = 40
 DEFAULT_ANO_MIN = 2010
-DEFAULT_ANO_MAX = 2026  # último ano com HISTESCOLARGR local completa.
+DEFAULT_ANO_MAX = datetime.now().year  # ano corrente; exige cache já extraído.
 DEFAULT_DIAS_CORTE = 5
 DEFAULT_PISO_VAGAS = 30
 DEFAULT_DIAS_PICO = (0, 7, 11, 14, 21)
@@ -108,12 +114,13 @@ RSTFM_REPROVACAO = ("RN", "RF", "RA", "AB")
 class DatasetConfig:
     """Parâmetros de escopo / saneamento do dataset, independentes da unidade.
 
-    Todos têm defaults IME, mas podem vir do ``.env`` (:meth:`from_env`) ou
-    serem passados explicitamente pelo CLI.
+    ``codundclg`` e ``prefixos`` são **obrigatórios** (sem fallback de
+    unidade): devem vir do ``.env`` (:meth:`from_env`) ou serem passados
+    explicitamente pelo CLI. Os demais têm defaults genéricos.
     """
 
-    codundclg: int = 45
-    prefixos: tuple[str, ...] = DEFAULT_PREFIXOS
+    codundclg: int
+    prefixos: tuple[str, ...]
     sufixo_min: int = DEFAULT_SUFIXO_MIN
     ano_min: int = DEFAULT_ANO_MIN
     ano_max: int = DEFAULT_ANO_MAX
@@ -139,8 +146,8 @@ class DatasetConfig:
             return tuple(p.strip() for p in v.split(",") if p.strip())
 
         cfg = {
-            "codundclg": env_int("REPLICADO_CODUNDCLG"),
-            "prefixos": env_csv("REPLICADO_PREFIXOS_DISC"),
+            "codundclg": overrides.pop("codundclg", env_int("REPLICADO_CODUNDCLG")),
+            "prefixos": overrides.pop("prefixos", env_csv("REPLICADO_PREFIXOS_DISC")),
             "sufixo_min": env_int("REPLICADO_SUFIXO_MIN"),
             "ano_min": env_int("REPLICADO_ANO_MIN"),
             "ano_max": env_int("REPLICADO_ANO_MAX"),
@@ -150,6 +157,12 @@ class DatasetConfig:
         }
         cfg = {k: v for k, v in cfg.items() if v is not None}
         cfg.update(overrides)
+        if cfg.get("codundclg") is None or cfg.get("prefixos") is None:
+            raise ValueError(
+                "As variáveis REPLICADO_CODUNDCLG (int) e REPLICADO_PREFIXOS_DISC "
+                "(lista CSV) são obrigatórias no .env (ou via CLI "
+                "--codundclg/--prefixos) para definir o escopo da unidade."
+            )
         return cls(**cfg)  # type: ignore[arg-type]
 
     @property
@@ -648,7 +661,7 @@ def features_demanda(
     df = t.copy()
     grade = dados["grade"]
     hp = dados["habilprog"]
-    cursos_ime = sorted(grade["codcur"].dropna().astype(int).unique().tolist())[
+    top_cursos_ativos = sorted(grade["codcur"].dropna().astype(int).unique().tolist())[
         : cfg.top_cursos
     ]
 
@@ -662,12 +675,12 @@ def features_demanda(
         hp_map = hp_map.dropna(subset=["codcur"])
         hg = hist.merge(hp_map, on="codpes", how="left").dropna(subset=["codcur"])
         hg["codcur"] = hg["codcur"].astype(int)
-        hg = hg[hg["codcur"].isin(cursos_ime)]
+        hg = hg[hg["codcur"].isin(top_cursos_ativos)]
         hg = _hist_com_ano_sem(hg)
         hist_cursos = hg
 
-    rep_cols = [f"rep_{c}" for c in cursos_ime]
-    fluxo_cols = [f"fluxo_{c}" for c in cursos_ime]
+    rep_cols = [f"rep_{c}" for c in top_cursos_ativos]
+    fluxo_cols = [f"fluxo_{c}" for c in top_cursos_ativos]
     for c in rep_cols + fluxo_cols:
         df[c] = 0
 
@@ -689,7 +702,7 @@ def features_demanda(
                 rep_set = ult[ult["rstfim"].isin(RSTFM_REPROVACAO)]
                 for (coddis, codcur), g in rep_set.groupby(["coddis", "codcur"]):
                     rep[(coddis, int(codcur))] = len(g)
-        for codcur in cursos_ime:
+        for codcur in top_cursos_ativos:
             col = f"rep_{codcur}"
             mask = df["ano_sem"] == sem_alvo
             df.loc[mask, col] = df.loc[mask, "coddis"].map(
@@ -701,7 +714,7 @@ def features_demanda(
         fluxo: dict[tuple[str, int], int] = {}
         if len(hp) and len(grade):
             ativos = hp[(hp["dtaclcgru"].isna()) | (hp["dtaclcgru"].dt.year >= ano)]
-            ativos = ativos[ativos["codcur"].isin(cursos_ime)].copy()
+            ativos = ativos[ativos["codcur"].isin(top_cursos_ativos)].copy()
             if len(ativos):
                 ativos["ano_ing"] = ativos["dtaing"].dt.year
                 ativos["sem_ing"] = np.where(ativos["dtaing"].dt.month > 6, 2, 1)
@@ -720,7 +733,7 @@ def features_demanda(
                 if len(bf):
                     for (coddis, codcur), g in bf.groupby(["coddis", "codcur"]):
                         fluxo[(coddis, int(codcur))] = len(g)
-        for codcur in cursos_ime:
+        for codcur in top_cursos_ativos:
             col = f"fluxo_{codcur}"
             mask = df["ano_sem"] == sem_alvo
             df.loc[mask, col] = df.loc[mask, "coddis"].map(
@@ -1525,7 +1538,10 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(description="Fornecedor de dataset de alocação")
     p.add_argument(
-        "--codundclg", type=int, default=None, help="Colegiado/unidade (default env/45)"
+        "--codundclg",
+        type=int,
+        default=None,
+        help="Colegiado/unidade (obrigatório se REPLICADO_CODUNDCLG ausente no .env)",
     )
     p.add_argument("--prefixos", nargs="+", default=None, help="Prefixos de disciplina")
     p.add_argument("--sufixo-min", type=int, default=None)

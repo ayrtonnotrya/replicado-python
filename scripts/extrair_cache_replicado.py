@@ -13,17 +13,25 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from replicado.connection import DB  # noqa: E402
 
+load_dotenv()
+
 CACHE_DIR = Path("temp/cache_maquina_tempo")
+
+_ANO_MIN = int(os.getenv("REPLICADO_ANO_MIN", "2010"))
+_ANO_MAX_DEFAULT = int(os.getenv("REPLICADO_ANO_MAX", str(datetime.now().year)))
 
 COLS_TURMAGR = """
     coddis, verdis, codtur, tiptur, tipmtr, dtainitur, dtafimtur, statur,
@@ -74,9 +82,16 @@ def extrair_histescolar(anos: list[int], forcar: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--anos", type=int, nargs="+",
-                        default=list(range(2010, 2027)),
-                        help="Anos a extrair da HISTESCOLARGR (default: 2010-2026)")
+    parser.add_argument(
+        "--anos",
+        type=int,
+        nargs="+",
+        default=list(range(_ANO_MIN, _ANO_MAX_DEFAULT + 1)),
+        help=(
+            "Anos a extrair da HISTESCOLARGR (default: REPLICADO_ANO_MIN.."
+            "REPLICADO_ANO_MAX do .env, fallback 2010..ano corrente)"
+        ),
+    )
     parser.add_argument("--forcar", action="store_true",
                         help="Reextrai mesmo com cache existente")
     args = parser.parse_args()

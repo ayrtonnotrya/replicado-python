@@ -11,9 +11,9 @@ instante em que o modelo faz sua previsão:
     T0 indica greve/calendário comprimido (gaps negativos ou muito curtos).
 
 2.  ``macro_requerimentos_30d_pre_dia_d`` — **termômetro da burocracia**:
-    contagem de requerimentos IME (undergrad, ``codpgm=1``) criados nos 30
-    dias que antecedem o Dia D da turma. ``dtacadrqm`` é imutável → barreira
-    temporal segura.
+    contagem de requerimentos da unidade (undergrad, ``codpgm=1``) criados
+    nos 30 dias que antecedem o Dia D da turma. ``dtacadrqm`` é imutável →
+    barreira temporal segura.
 
 3.  ``macro_frac_atraso_notas_T1`` — **atraso sistêmico de notas**: fração
     das matrículas do semestre anterior T-1 ainda **não consolidadas** no
@@ -22,10 +22,11 @@ instante em que o modelo faz sua previsão:
     instante, portanto a nota final não estava disponível).
 
 4.  ``macro_trancamentos_3m_pre_dia_d`` e ``macro_taxa_trancamento_90d`` —
-    **taxa global de trancamento de curso**: nº de programas IME (undergrad)
-    que migraram para ``stapgm='T'`` (trancamento) nos 90 dias que antecedem
-    o Dia D, e a razão pelo número de programas IME ativos no snapshot do
-    Dia D (``stapgm='A'`` ou ``'R'`` no último evento ``dtaoco<=Dia D``).
+    **taxa global de trancamento de curso**: nº de programas da unidade
+    (undergrad) que migraram para ``stapgm='T'`` (trancamento) nos 90 dias
+    que antecedem o Dia D, e a razão pelo número de programas da unidade
+    ativos no snapshot do Dia D (``stapgm='A'`` ou ``'R'`` no último evento
+    ``dtaoco<=Dia D``).
 
 Princípios de sobrevivência temporal (a regra do Dia D):
 
@@ -41,13 +42,14 @@ Princípios de sobrevivência temporal (a regra do Dia D):
     semestres passados não vaza futuro, pois a data é registrada quando o
     calendário daquele semestre é definido.
 
-Escopo IME (``codundclg``): todos os filtros de student membership passam
-pelo conjunto ``codpes`` derivado de ``HABILPROGGR`` (já em ``dados`` após
-``carregar_dados``), restrito ao undergrad da unidade (``codpgm=1``).
+Escopo da unidade (``codundclg``): todos os filtros de student membership
+passam pelo conjunto ``codpes`` derivado de ``HABILPROGGR`` (já em ``dados``
+após ``carregar_dados``), restrito ao undergrad da unidade (``codpgm=1``).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -103,11 +105,16 @@ def carregar_macrosensores(
     cfg: DatasetConfig, dados: dict[str, pd.DataFrame], forcar: bool = False
 ) -> dict[str, pd.DataFrame]:
     """Extrai/cacheia as 3 tabelas auxiliares dos macro-sensores e injeta em
-    ``dados`` (chaves ``calend``, ``req_ime``, ``histprog_ime``).
+    ``dados`` (chaves ``calend``, ``req_unidade``, ``histprog_unidade``).
 
     São filtradas no banco por :class:`DatasetConfig.codundclg` (via JOIN com
     ``HABILPROGGR`` → ``CURSOGR``) e por ``codpgm=1`` (graduação), de modo a
     restringir o cache a eventos da unidade-alvo.
+
+    Migração: renomeados os caches legados ``aux_req_ime_<cod>.pkl`` /
+    ``aux_histprog_ime_<cod>.pkl`` para ``*_unidade_*``. Se o arquivo novo não
+    existir mas o legado existir, ele é usado (e regravado no novo nome) —
+    evita reextrair do banco só por causa da renomeação estética.
     """
     cod = cfg.codundclg
     cache = cfg.cache_dir
@@ -117,6 +124,18 @@ def carregar_macrosensores(
     # Recuperação do ``AlgorithmException`` absurdamente longa atrás: estica
     # a janela em um ano para cobrir T-1 do primeiro ano do dataset.
     data_min = pd.Timestamp(year=ano_min - 1, month=1, day=1)
+
+    def _resolve_cache(novo: Path, legado: Path | None = None) -> tuple[Path, bool]:
+        """Devolve (caminho_para_ler, ja_existe). Promove caches legados."""
+        if novo.exists():
+            return novo, True
+        if legado is not None and legado.exists():
+            try:
+                legado.rename(novo)
+            except OSError:
+                return legado, True  # rename falhou (ex.: FS): lê do velho
+            return novo, True
+        return novo, False
 
     # ---- CALENDGR (pequena; só leitura) ---------------------------------
     c = cache / f"aux_calend_{cod}.pkl"
@@ -130,12 +149,14 @@ def carregar_macrosensores(
         )
         dados["calend"] = _stream_to_pickle(c, q, "aux:calend")
 
-    # ---- REQUERIMENTOGR (IME undergraduate) -----------------------------
-    # JOIN por (codpes, codpgm) com habilit-programa único de IME: impede
+    # ---- REQUERIMENTOGR (undergrad da unidade) -------------------------
+    # JOIN por (codpes, codpgm) com habilit-programa único da unidade: impede
     # multiplicar linhas (aluno com várias habilitações no mesmo codpgm).
-    c = cache / f"aux_req_ime_{cod}.pkl"
-    if c.exists() and not forcar:
-        dados["req_ime"] = _load_pickled(c)
+    c = cache / f"aux_req_unidade_{cod}.pkl"
+    c_legado = cache / f"aux_req_ime_{cod}.pkl"
+    c_ler, existe = _resolve_cache(c, c_legado)
+    if existe and not forcar:
+        dados["req_unidade"] = _load_pickled(c_ler)
     else:
         q = (
             "SELECT DISTINCT R.codpes, R.codpgm, R.dtacadrqm, R.tiprqm "
@@ -144,21 +165,23 @@ def carregar_macrosensores(
             "  SELECT DISTINCT HP.codpes, HP.codpgm "
             f"  FROM HABILPROGGR HP INNER JOIN CURSOGR C ON HP.codcur = C.codcur "
             f"  WHERE C.codclg = {cod} "
-            ") IME ON R.codpes = IME.codpes AND R.codpgm = IME.codpgm "
+            ") UNID ON R.codpes = UNID.codpes AND R.codpgm = UNID.codpgm "
             f"WHERE R.codpgm = 1 AND R.dtacadrqm >= '{data_min.date().isoformat()}'"
         )
-        dados["req_ime"] = _stream_to_pickle(c, q, "aux:req_ime")
-    r = dados["req_ime"].copy()
+        dados["req_unidade"] = _stream_to_pickle(c, q, "aux:req_unidade")
+    r = dados["req_unidade"].copy()
     if len(r):
         r["dtacadrqm"] = pd.to_datetime(r["dtacadrqm"], errors="coerce")
         if "tiprqm" in r.columns:
             r["tiprqm"] = r["tiprqm"].astype(str).str.strip()
-    dados["req_ime"] = r
+    dados["req_unidade"] = r
 
-    # ---- HISTPROGGR (IME undergraduate) ---------------------------------
-    c = cache / f"aux_histprog_ime_{cod}.pkl"
-    if c.exists() and not forcar:
-        dados["histprog_ime"] = _load_pickled(c)
+    # ---- HISTPROGGR (undergrad da unidade) ------------------------------
+    c = cache / f"aux_histprog_unidade_{cod}.pkl"
+    c_legado = cache / f"aux_histprog_ime_{cod}.pkl"
+    c_ler, existe = _resolve_cache(c, c_legado)
+    if existe and not forcar:
+        dados["histprog_unidade"] = _load_pickled(c_ler)
     else:
         q = (
             "SELECT h.codpes, h.codpgm, h.dtaoco, h.stapgm, h.motstapgm, "
@@ -168,17 +191,17 @@ def carregar_macrosensores(
             "  SELECT DISTINCT HP.codpes, HP.codpgm "
             f"  FROM HABILPROGGR HP INNER JOIN CURSOGR C ON HP.codcur = C.codcur "
             f"  WHERE C.codclg = {cod} "
-            f") IME ON h.codpes = IME.codpes AND h.codpgm = IME.codpgm "
+            f") UNID ON h.codpes = UNID.codpes AND h.codpgm = UNID.codpgm "
             f"WHERE h.codpgm = 1 AND h.dtaoco >= '{data_min.date().isoformat()}'"
         )
-        dados["histprog_ime"] = _stream_to_pickle(c, q, "aux:histprog_ime")
-    h = dados["histprog_ime"].copy()
+        dados["histprog_unidade"] = _stream_to_pickle(c, q, "aux:histprog_unidade")
+    h = dados["histprog_unidade"].copy()
     if len(h):
         h["dtaoco"] = pd.to_datetime(h["dtaoco"], errors="coerce")
         h["stapgm"] = h["stapgm"].astype(str).str.strip()
         if "motstapgm" in h.columns:
             h["motstapgm"] = h["motstapgm"].astype(str).str.strip()
-    dados["histprog_ime"] = h
+    dados["histprog_unidade"] = h
     return dados
 
 
@@ -314,9 +337,9 @@ def _macro_gap_calendario(
 def _macro_requerimentos(
     cfg: DatasetConfig, df: pd.DataFrame, dados: dict[str, pd.DataFrame]
 ) -> pd.Series:
-    """H2: contagem de requerimentos IME (undergrad) criados em
+    """H2: contagem de requerimentos da unidade (undergrad) criados em
     ``[Dia D - 30d, Dia D]``. ``dtacadrqm`` é imutável ⇒ barreira segura."""
-    req = dados.get("req_ime")
+    req = dados.get("req_unidade")
     dias_janela = DEFAULT_JANELA_REQUERIMENTOS_D
     out = pd.Series(0, index=df.index, dtype="int64")
     if req is None or not len(req):
@@ -408,19 +431,20 @@ def _macro_atraso_notas(
 def _macro_trancamento(
     cfg: DatasetConfig, df: pd.DataFrame, dados: dict[str, pd.DataFrame]
 ) -> pd.DataFrame:
-    """H4: número de trancamentos IME (``stapgm='T'``) nos 90 dias pré-Dia D
-    e a taxa sobre o total de programas ativos no snapshot do Dia D.
+    """H4: número de trancamentos da unidade (``stapgm='T'``) nos 90 dias
+    pré-Dia D e a taxa sobre o total de programas ativos no snapshot do
+    Dia D.
 
     Numerador: ``HISTPROGGR`` cujo ``stapgm='T'`` AND ``dtaoco ∈ [Dia D −
     90d, Dia D]``. Não contamos ``stapgm='E'`` porque é majoritariamente
     "Conclusão" (vide motstapgm no cache), fonte de ruído e não de crise-
     temporária (a hipótese fala em "abandono temporário").
 
-    Denominador: snapshot de programas IME ativos no Dia D — último evento
-    ``dtaoco <= Dia D`` por ``(codpes, codpgm)``; ativo se ``stapgm ∈
-    {'A','R'}``. Snapshot é seguro: nunca lê eventos futuros.
+    Denominador: snapshot de programas da unidade ativos no Dia D — último
+    evento ``dtaoco <= Dia D`` por ``(codpes, codpgm)``; ativo se ``stapgm
+    ∈ {'A','R'}``. Snapshot é seguro: nunca lê eventos futuros.
     """
-    hp = dados.get("histprog_ime")
+    hp = dados.get("histprog_unidade")
     out_n = pd.Series(0, index=df.index, dtype="int64")
     out_rate = pd.Series(np.nan, index=df.index, dtype="float64")
     if hp is None or not len(hp):

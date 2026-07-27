@@ -6,7 +6,7 @@ Fontes avaliadas:
   3. HABILVAGA.totvagofe          -> vagas oferecidas por ano (referencia o anoofe)
   4. HISTCURSOGR.totvag           -> total historico (cursos encerrados: dtafimcur set)
 
-Foco: codclg = 45 (IME). Executar via tunnel SSH.
+Foco: codclg lido de ``REPLICADO_CODUNDCLG`` (``.env``). Executar via tunnel SSH.
 """
 
 import os
@@ -18,7 +18,14 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from replicado.connection import DB
 
-CODCLG = 45
+load_dotenv()
+_cod_env = os.getenv("REPLICADO_CODUNDCLG")
+if not _cod_env or not _cod_env.strip():
+    raise ValueError(
+        "REPLICADO_CODUNDCLG não definido no .env —informe o código do "
+        "colegiado/unidade (ex.: 45 para o IME)."
+    )
+CODCLG = int(_cod_env)
 
 
 def fetch_habilitacao(codclg: int) -> pd.DataFrame:
@@ -80,7 +87,7 @@ def main() -> None:
     hc = fetch_histcursogr(CODCLG)
 
     print("=" * 90)
-    print(f"CURSOS codclg={CODCLG} (IME) em CURSOGR: {len(cur)} linhas")
+    print(f"CURSOS codclg={CODCLG} em CURSOGR: {len(cur)} linhas")
     print("=" * 90)
 
     # Soma das habilitacoes ativas por curso

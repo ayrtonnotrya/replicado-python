@@ -1,4 +1,4 @@
-"""Analisa a evolucao temporal de vagas por codcur (IME, codclg=45).
+"""Analisa a evolucao temporal de vagas por codcur (unidade via .env).
 
 Perguntas:
   1. O numero de vagas mudou de 2010 para ca (HABILVAGA por anoofe)?
@@ -9,6 +9,8 @@ As duas fontes sao confrontadas:
   - HABILVAGA.totvagofe (operacional, por anoofe + codcur + codhab)
   - HABILITACAOGR.{numvaghab,numvaghabcpl,numvaghabcvn} (cadastral, com
     dtaatvhab/dtadtvhab que delimitam janelas de vigencia)
+
+Foco: codclg lido de ``REPLICADO_CODUNDCLG`` (``.env``).
 """
 
 import os
@@ -20,7 +22,14 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from replicado.connection import DB
 
-CODCLG = 45
+load_dotenv()
+_cod_env = os.getenv("REPLICADO_CODUNDCLG")
+if not _cod_env or not _cod_env.strip():
+    raise ValueError(
+        "REPLICADO_CODUNDCLG não definido no .env — informe o código do "
+        "colegiado/unidade (ex.: 45 para o IME)."
+    )
+CODCLG = int(_cod_env)
 
 
 def main() -> None:

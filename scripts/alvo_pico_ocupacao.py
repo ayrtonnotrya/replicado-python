@@ -33,14 +33,17 @@ Alvos candidatos avaliados
   T_pico    : max(ocupacao) entre D+0 e D+21 — ALVO RECOMENDADO
               (ver conclusões impressas ao final)
 
-Escopo: disciplinas do IME (prefixos 45/MAC/MAE/MAT/MAP/MPM — as 43xxxxx da
-Física ministradas no IME ficam de fora a pedido do usuário), turmas com
-sufixo >= 40, 2010+.
+Escopo: definido por variáveis de ambiente (mesmas do dataset_alocacao):
+``REPLICADO_PREFIXOS_DISC`` (lista CSV de prefixos de disciplina da
+unidade), ``REPLICADO_SUFIXO_MIN`` e ``REPLICADO_ANO_MIN/MAX``. Turmas de
+outras unidades no cache (ex.: vazamento 2023-2024 na TURMAGR local) ficam
+de fora do filtro, evitando ocupação reconstruída zerada.
 
 ARMADILHAS DA RÉPLICA (descobertas na validação):
   - Em 2023-2024 a TURMAGR local contém turmas de TODA a USP (~18k em 2023,
     prefixos CMU/RCG/FLC/LES...), SEM cobertura no HISTESCOLARGR local. Sem o
-    filtro de escopo IME, a ocupação reconstruída sai zerada para elas.
+    filtro de escopo (REPLICADO_PREFIXOS_DISC), a ocupação reconstruída sai
+    zerada para elas.
   - A TURMAGR cobre turmas desde ~1980, mas o HISTESCOLARGR local só existe
     de 2010 em diante — série confiável: 2010+.
   - O último semestre do cache pode estar em andamento (consolidação
@@ -54,10 +57,15 @@ Uso
 
 from __future__ import annotations
 
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()
 
 CACHE_DIR = Path("temp/cache_maquina_tempo")
 SAIDA = Path("temp/alvo_pico_ocupacao.csv")
@@ -65,12 +73,20 @@ SAIDA = Path("temp/alvo_pico_ocupacao.csv")
 MARCOS = [-5, 0, 7, 11, 14, 21]  # dias relativos ao início das aulas
 DIA_PICO = 11  # sexta-feira da 2ª semana de aulas (início na segunda)
 
-# Escopo: disciplinas do IME (codundclg=45). As numéricas 43xxxxx são da
-# Física (IFUSP) ministradas no IME — ficam de fora a pedido do usuário.
-# Validado nos dados: cobertura HISTESCOLARGR/TURMAGR = 1.00 nesses prefixos.
-PREFIXOS_IME = ("45", "MAC", "MAE", "MAT", "MAP", "MPM")
-SUFIXO_MIN = 40  # turmas "reais" de oferecimento (mesmo critério do estmtr)
-ANOS = range(2010, 2027)
+# Escopo vem estritamente do .env (variáveis também usadas pelo
+# dataset_alocacao). Sem REPLICADO_PREFIXOS_DISC => erro explícito.
+_pref_env = os.getenv("REPLICADO_PREFIXOS_DISC", "")
+if not _pref_env.strip():
+    raise ValueError(
+        "REPLICADO_PREFIXOS_DISC não definido no .env — defina a lista CSV de "
+        "prefixos de disciplina da sua unidade (ex.: 45,MAC,MAE,MAT,MAP,MPM)."
+    )
+PREFIXOS_UNIDADE = tuple(p.strip() for p in _pref_env.split(",") if p.strip())
+
+SUFIXO_MIN = int(os.getenv("REPLICADO_SUFIXO_MIN", "40"))
+_ANO_MIN = int(os.getenv("REPLICADO_ANO_MIN", "2010"))
+_ANO_MAX = int(os.getenv("REPLICADO_ANO_MAX", str(datetime.now().year)))
+ANOS = range(_ANO_MIN, _ANO_MAX + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +94,19 @@ ANOS = range(2010, 2027)
 # ---------------------------------------------------------------------------
 def carregar() -> tuple[pd.DataFrame, pd.DataFrame]:
     turmas = pd.read_pickle(CACHE_DIR / "turmagr_full.pkl")
-    hist = pd.concat(
-        [pd.read_pickle(CACHE_DIR / f"histescolar_{a}.pkl") for a in ANOS],
-        ignore_index=True,
+    fatias = [CACHE_DIR / f"histescolar_{a}.pkl" for a in ANOS]
+    faltando = [c.name for c in fatias if not c.exists()]
+    if faltando:
+        print(
+            f"[aviso] {len(faltando)} fatia(s) de HISTESCOLARGR ausente(s) no "
+            f"cache: {', '.join(faltando)} — rode scripts/extrair_cache_replicado.py",
+            file=sys.stderr,
+        )
+    fatias = [c for c in fatias if c.exists()]
+    hist = (
+        pd.concat([pd.read_pickle(c) for c in fatias], ignore_index=True)
+        if fatias
+        else pd.DataFrame()
     )
     return turmas, hist
 
@@ -91,9 +117,10 @@ def carregar() -> tuple[pd.DataFrame, pd.DataFrame]:
 def construir_curva_ocupacao(turmas: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
     t = turmas.copy()
     t["dtainitur"] = pd.to_datetime(t["dtainitur"])
-    # Escopo: disciplinas IME, codtur padrão AAAASTT com sufixo >= 40,
-    # tipmtr normal e data de início conhecida.
-    t = t[t["coddis"].str.startswith(PREFIXOS_IME)]
+    # Escopo: prefixos da unidade (REPLICADO_PREFIXOS_DISC), codtur padrão
+    # AAAASTT com sufixo >= sufixo_min, tipmtr normal e data de início
+    # conhecida.
+    t = t[t["coddis"].str.startswith(PREFIXOS_UNIDADE)]
     t = t[t["codtur"].str.match(r"^20\d{5}$")]
     t = t[t["codtur"].str[:4].astype(int).isin(ANOS)]  # cobertura do HIST
     t = t[t["codtur"].str[-2:].astype(int) >= SUFIXO_MIN]
@@ -180,7 +207,7 @@ def analise_trancamentos(hist: pd.DataFrame, turmas: pd.DataFrame) -> None:
     print("=" * 72)
     t = turmas[["coddis", "codtur", "dtainitur"]].copy()
     t["dtainitur"] = pd.to_datetime(t["dtainitur"])
-    t = t[t["coddis"].str.startswith(PREFIXOS_IME)]
+    t = t[t["coddis"].str.startswith(PREFIXOS_UNIDADE)]
     t = t[t["codtur"].str.match(r"^20\d{5}$")]
     t = t[t["codtur"].str[-2:].astype(int) >= SUFIXO_MIN]
     h = hist.merge(t.dropna(subset=["dtainitur"]), on=["coddis", "codtur"], how="inner")
@@ -257,8 +284,8 @@ def conclusao(df: pd.DataFrame) -> None:
   1. O argmax modal é o PRÓPRIO INÍCIO DAS AULAS (D+0): as turmas nascem
      cheias e só esvaziam. O máximo garante que a sala nunca será
      subdimensionada; um marco fixo (D+11) ficaria a ~1 aluno do máximo.
-  2. 100% reconstruível desde 2010 (dtacrihst/dtaultalt sem nulos;
-     cobertura HISTESCOLARGR/TURMAGR = 1.00 nas disciplinas IME);
+2. 100% reconstruível desde 2010 (dtacrihst/dtaultalt sem nulos;
+      cobertura HISTESCOLARGR/TURMAGR = 1.00 nas disciplinas da unidade);
   3. Trancamentos DEIXAM RASTRO (stamtr='E', rstfim='T', dtaultalt) — o alvo
      não sofre do piso irredutível que afetou o estmtr;
   4. Nas turmas ativas do histórico: pico mediano = {pico.median():.0f},
