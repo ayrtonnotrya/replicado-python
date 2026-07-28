@@ -259,13 +259,39 @@ def _load_pickled(caminho: Path) -> pd.DataFrame:
     return pd.read_pickle(caminho)
 
 
-def carregar_dados(cfg: DatasetConfig, forcar: bool = False) -> dict[str, pd.DataFrame]:
+def carregar_dados(
+    cfg: DatasetConfig,
+    forcar: bool = False,
+    *,
+    atualizar_anos: Iterable[int] = (),
+) -> dict[str, pd.DataFrame]:
     """Carrega/cacheia todas as tabelas usadas pelas features.
 
     TURMAGR e HISTESCOLARGR aproveitam o cache já produzido por
     ``scripts/extrair_cache_replicado.py`` (cross-unit, sem sufixo de unidade).
     As auxiliares são filtradas por ``codundclg`` e cacheadas com sufixo
     ``_<codundclg>.pkl`` para isolar diferentes unidades.
+
+    Refresh da HISTESCOLARGR (ortogonal ao ``forcar``):
+
+    Por padrão ``carregar_dados`` só lia HISTESCOLARGR do cache (pickle
+    existente) ou emitia ``[aviso]`` se faltasse — **ignorando ``forcar``**,
+    um bug de coerência: ``montar_dataset(forcar_extracao=True)`` não
+    refazia o histórico. Agora o loop de histórico respeita:
+
+    - **``atualizar_anos`` não-vazio** (lista explícita de anos quentes):
+      re-extraí do banco EXATAMENTE os anos listados, sobrescrevendo
+      ``histescolar_<ano>.pkl``; os demais anos vêm do cache existente
+      (ou ``[aviso]`` se faltar). ``forcar`` É IGNORADO para a HISTESCOLARGR
+      neste modo — é o caminho cirúrgico/lean do retreino
+      (T_pico/estmtr só mudam de fato nos últimos anos letivos).
+    - **``atualizar_anos`` vazio (default)**: ``forcar`` governa a HIST
+      (bug fix honrando o nome do flag). ``forcar=True`` re-extrai TODAS as
+      fatias; ``forcar=False`` lê do cache (ou ``[aviso]`` se faltar).
+
+    Assim, ``montar_dataset(forcar_extracao=True, atualizar_anos=[a-1,a])``
+    refaz TURMAGR + auxiliares (via ``forcar``) e só os 2 anos quentes de
+    HIST (via ``atualizar_anos``) — uma chamada para o pipeline de retreino.
     """
     dados: dict[str, pd.DataFrame] = {}
     cod = cfg.codundclg
@@ -282,19 +308,35 @@ def carregar_dados(cfg: DatasetConfig, forcar: bool = False) -> dict[str, pd.Dat
     t["codtur"] = t["codtur"].astype(str).str.strip()
     dados["turmas"] = t
 
-    # --- HISTESCOLARGR por ano (já existe via extrair_cache) ----------------
+    # --- HISTESCOLARGR por ano (refresh incremental) ----------------------
+    # ``atualizar_anos`` (não-vazio) re-extraí cirurgicamente só os anos
+    # listados — ``forcar`` é IGNORADO para HIST neste modo. Com
+    # ``atualizar_anos`` vazio, ``forcar`` governa (bug fix: ``forcar=True``
+    # re-extraí todas as fatias; default lê do cache). Ver docstring acima.
+    atualizar_set = {int(a) for a in atualizar_anos}
     hist_chunks = []
     anos_existentes = []
+    # Import tardio p/ evitar import circular (cache.py importa COLS_TURMAGR
+    # deste módulo).
+    from .cache import extrair_fatia_histescolar
+
     for ano in cfg.anos:
         c = cache / f"histescolar_{ano}.pkl"
-        if not c.exists():
+        if atualizar_set:
+            extrair = ano in atualizar_set
+        else:
+            extrair = forcar
+        if extrair:
+            hist_chunks.append(extrair_fatia_histescolar(ano, cache))
+            anos_existentes.append(ano)
+        elif c.exists():
+            hist_chunks.append(_load_pickled(c))
+            anos_existentes.append(ano)
+        else:
             print(
                 f"[aviso] {c.name} ausente — rode scripts/extrair_cache_replicado.py",
                 file=sys.stderr,
             )
-            continue
-        hist_chunks.append(_load_pickled(c))
-        anos_existentes.append(ano)
     h = pd.concat(hist_chunks, ignore_index=True) if hist_chunks else pd.DataFrame()
     if len(h):
         h["coddis"] = h["coddis"].astype(str).str.strip().str.upper()
@@ -1531,10 +1573,35 @@ COLUNAS_DESCARTE = [
 def montar_dataset(
     cfg: DatasetConfig | None = None,
     forcar_extracao: bool = False,
+    *,
+    atualizar_anos: Iterable[int] = (),
 ) -> pd.DataFrame:
     """Constrói o DataFrame mestre (features + alvo) por turma.
 
     Sai em ``cfg.saida`` (CSV). Retorna o DataFrame.
+
+    Refresh incremental do cache (ver :func:`carregar_dados`):
+
+    - ``forcar_extracao`` mantém o comportamento atual: re-extraí TURMAGR e
+      todas as tabelas auxiliares com ``SELECT {COLS}`` (rápido). Quando
+      ``atualizar_anos`` é vazio, também re-extraí toda a HISTESCOLARGR (bug
+      fix — ``forcar`` agora honra o nome no histórico).
+    - ``atualizar_anos`` (lista explícita de anos) re-extraí do banco SÓ os
+      pickles ``histescolar_<ano>.pkl`` desses anos, sobrescrevendo o cache;
+      os anos fora da lista vêm do cache existente. Neste modo ``forcar`` é
+      ignorado para a HISTESCOLARGR — refresh cirúrgico, ideal para o
+      retreino noturno onde só os 2 últimos anos letivos mudam de fato.
+
+    Default ``atualizar_anos=()`` é no-op e preserva callers existentes.
+
+    Pipeline de retreino da API Skuld em uma chamada::
+
+        ano = datetime.now().year
+        df = montar_dataset(
+            DatasetConfig.from_env(...),
+            forcar_extracao=True,            # refaz TURMAGR + auxiliares
+            atualizar_anos=[ano - 1, ano],   # refaz só os 2 anos quentes de HIST
+        )
     """
     cfg = cfg or DatasetConfig.from_env()
     print(
@@ -1543,7 +1610,9 @@ def montar_dataset(
         f"  saida: {cfg.saida}"
     )
 
-    dados = carregar_dados(cfg, forcar=forcar_extracao)
+    dados = carregar_dados(
+        cfg, forcar=forcar_extracao, atualizar_anos=atualizar_anos
+    )
     turmas_f = filtrar_turmas(cfg, dados["turmas"])
     print(f"Turmas no escopo: {len(turmas_f)}")
 
@@ -1622,6 +1691,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     p.add_argument(
         "--forcar-extracao", action="store_true", help="Reextrai tabelas auxiliares"
     )
+    p.add_argument(
+        "--atualizar-anos",
+        type=int,
+        nargs="+",
+        default=[],
+        help=(
+            "Anos da HISTESCOLARGR a re-extraí do banco (refresh cirúrgico; "
+            "ignora --forcar-extracao para o histórico). Default: nenhum."
+        ),
+    )
     p.add_argument("--saida", type=Path, default=None)
     args = p.parse_args(list(argv) if argv is not None else None)
 
@@ -1640,7 +1719,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         overrides["saida"] = args.saida
 
     cfg = DatasetConfig.from_env(**overrides)
-    montar_dataset(cfg, forcar_extracao=args.forcar_extracao)
+    montar_dataset(
+        cfg,
+        forcar_extracao=args.forcar_extracao,
+        atualizar_anos=args.atualizar_anos,
+    )
     return 0
 
 
