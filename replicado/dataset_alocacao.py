@@ -72,6 +72,7 @@ Uso
 from __future__ import annotations
 
 import sys
+import warnings
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -106,6 +107,21 @@ DEFAULT_TOP_CURSOS = 12
 
 RSTFM_REPROVACAO = ("RN", "RF", "RA", "AB")
 
+# Colunas da TURMAGR efetivamente usadas pelo pipeline (lista explícita
+# para nunca depender de ``SELECT *``). É a **fonte da verdade**: o script
+# ``scripts/extrair_cache_replicado.py`` importa destaqui, e
+# :func:`carregar_dados` (caminho ``forcar=True``) também. Usar ``SELECT *``
+# injetaria colunas-brutas de texto/código (obstur, timestamp, cgahorpra,
+# cgahorteo, obsadctur, codlindis, staexucslmtr, staofesgdavl, staturati)
+# que virariam feature e quebrariam o esquema estável consumido pelo modelo.
+COLS_TURMAGR = """
+    coddis, verdis, codtur, tiptur, tipmtr, dtainitur, dtafimtur, statur,
+    dtacritur, numvagtur, numvagopt, numvagoptlre, numvagturcpl, numvagecr,
+    numins, numinsopt, numinsoptlre, numinscpl, numinsecr,
+    numpmtobg, numpmtopt, numpmtoptlre, numpmtcpl, numpmtecr,
+    nummtr, nummtropt, nummtroptlre, nummtrturcpl, nummtrecr
+"""
+
 
 # ---------------------------------------------------------------------------
 # Configuração agnóstica à unidade
@@ -130,6 +146,17 @@ class DatasetConfig:
     top_cursos: int = DEFAULT_TOP_CURSOS
     cache_dir: Path = CACHE_DIR
     saida: Path = SAIDA_DEFAULT
+    # Catálogos fixos de ``codcur`` (freeze de schema). Quando definidos, as
+    # features ``rep_<codcur>``/``fluxo_<codcur>`` e ``vagas_curso_<codcur>``
+    # enumeram EXATAMENTE estes cursos, na ORDEM dada — independentemente do
+    # que CURSOGR/HABILITACAOGR digam hoje. É o freeze de longo prazo: um
+    # .pkl treinado hoje continua enxergando as mesmas colunas mesmo se um
+    # curso for desativado/criado no banco amanhã (zeros no slot inativo).
+    # A ORDEM dos inteiros na tupla DEFINE a ordem das colunas no CSV; não
+    # reordene — modelos treinados dependem dela (``feature_name_``).
+    # Se ``None``: fallback ao comportamento dinâmico histórico (com warn).
+    cursos_rep_fluxo: tuple[int, ...] | None = None
+    cursos_vagas: tuple[int, ...] | None = None
 
     @classmethod
     def from_env(cls, **overrides: Any) -> DatasetConfig:
@@ -145,6 +172,15 @@ class DatasetConfig:
                 return None
             return tuple(p.strip() for p in v.split(",") if p.strip())
 
+        def env_int_csv(name: str) -> tuple[int, ...] | None:
+            v = os.getenv(name)
+            if not v or not v.strip():
+                return None
+            try:
+                return tuple(int(p.strip()) for p in v.split(",") if p.strip())
+            except ValueError as e:
+                raise ValueError(f"{name} deve ser uma CSV de inteiros: {e}") from e
+
         cfg = {
             "codundclg": overrides.pop("codundclg", env_int("REPLICADO_CODUNDCLG")),
             "prefixos": overrides.pop("prefixos", env_csv("REPLICADO_PREFIXOS_DISC")),
@@ -154,6 +190,12 @@ class DatasetConfig:
             "dias_corte": env_int("REPLICADO_DIAS_CORTE"),
             "piso_vagas": env_int("REPLICADO_PISO_VAGAS"),
             "top_cursos": env_int("REPLICADO_TOP_CURSOS"),
+            "cursos_rep_fluxo": overrides.pop(
+                "cursos_rep_fluxo", env_int_csv("REPLICADO_CURSOS_REP_FLUXO")
+            ),
+            "cursos_vagas": overrides.pop(
+                "cursos_vagas", env_int_csv("REPLICADO_CURSOS_VAGAS")
+            ),
         }
         cfg = {k: v for k, v in cfg.items() if v is not None}
         cfg.update(overrides)
@@ -234,7 +276,7 @@ def carregar_dados(cfg: DatasetConfig, forcar: bool = False) -> dict[str, pd.Dat
     if c.exists() and not forcar:
         dados["turmas"] = _load_pickled(c)
     else:
-        dados["turmas"] = _stream_to_pickle(c, "SELECT * FROM TURMAGR", "TURMAGR")
+        dados["turmas"] = _stream_to_pickle(c, f"SELECT {COLS_TURMAGR} FROM TURMAGR", "TURMAGR")
     t = dados["turmas"].copy()
     t["coddis"] = t["coddis"].astype(str).str.strip().str.upper()
     t["codtur"] = t["codtur"].astype(str).str.strip()
@@ -661,9 +703,22 @@ def features_demanda(
     df = t.copy()
     grade = dados["grade"]
     hp = dados["habilprog"]
-    top_cursos_ativos = sorted(grade["codcur"].dropna().astype(int).unique().tolist())[
-        : cfg.top_cursos
-    ]
+    if cfg.cursos_rep_fluxo is not None:
+        # Freeze: enumerar EXATAMENTE o catálogo, na ordem dada. Garante que
+        # rep_/fluxo_<codcur> virem as mesmas colunas (e na mesma ordem) mesmo
+        # que a grade mude no banco — preserva ``feature_name_`` do .pkl.
+        top_cursos_ativos = list(cfg.cursos_rep_fluxo)
+    else:
+        warnings.warn(
+            "REPLICADO_CURSOS_REP_FLUXO não definido: top-K de cursos para "
+            "rep_/fluxo_ derivado dinamicamente da grade (sorted asc, slice "
+            "top_cursos). Defina a variável no .env para um esquema de "
+            "colunas estável entre extrações (ver .env.example / AGENTS.md).",
+            stacklevel=2,
+        )
+        top_cursos_ativos = sorted(
+            grade["codcur"].dropna().astype(int).unique().tolist()
+        )[: cfg.top_cursos]
 
     # Reprovados por (disciplina, curso): casamos HISTESCOLARGR com o curso
     # do aluno via HABILPROGGR (codpes -> codcur), evitando multiplicar linhas
@@ -816,16 +871,6 @@ def features_vagas_curso(
         hb[c] = pd.to_numeric(hb[c], errors="coerce").fillna(0)
     hb["vag_total"] = hb["numvaghab"] + hb["numvaghabcpl"] + hb["numvaghabcvn"]
 
-    # Cursos ativos HOJE (≥1 habilitação vigente).
-    hoje = pd.Timestamp.now().normalize()
-    ativas_hoje = hb[
-        (hb["dtaatvhab"].isna() | (hb["dtaatvhab"] <= hoje))
-        & (hb["dtadtvhab"].isna() | (hb["dtadtvhab"] > hoje))
-    ]
-    codcurs_ativos = sorted(ativas_hoje["codcur"].astype(int).unique().tolist())
-    if not codcurs_ativos:
-        return df
-
     # Grade: (codcur, coddis) — qualquer tipobg (obrigatória + optativa).
     g = grade.copy()
     g["codcur"] = pd.to_numeric(g["codcur"], errors="coerce")
@@ -833,22 +878,49 @@ def features_vagas_curso(
     g["codcur"] = g["codcur"].astype(int)
     g = g.dropna(subset=["coddis"])
     g_pairs = g.drop_duplicates(["codcur", "coddis"])[["codcur", "coddis"]]
-    codcurs_grade = set(g_pairs["codcur"].unique())
-    candidatos = [c for c in codcurs_ativos if c in codcurs_grade]
-    if not candidatos:
-        return df
-
-    # Top_cursos ativos com mais turmas servidas no dataset.
     discis_set = set(df["coddis"].unique())
-    disc_por_cur: dict[int, set[str]] = {}
-    for c in candidatos:
-        disc_por_cur[c] = set(g_pairs.loc[g_pairs["codcur"] == c, "coddis"])
-    contagem = {c: len(disc_por_cur[c] & discis_set) for c in candidatos}
-    codcurs = sorted(contagem, key=lambda c: contagem[c], reverse=True)[
-        : cfg.top_cursos
-    ]
-    # Reaproveita apenas os conjuntos de código de disciplinas dos escolhidos.
-    disc_por_cur = {c: disc_por_cur[c] for c in codcurs}
+
+    if cfg.cursos_vagas is not None:
+        # Freeze: enumerar EXATAMENTE o catálogo, na ordem dada. Sem
+        # depender de "ativos HOJE" — um curso desativado amanhã mantém sua
+        # coluna (reconstruída de HABILITACAOGR por datas de vigência; zeros
+        # nos anos após a desativação). Preserva ``feature_name_`` do .pkl.
+        codcurs = list(cfg.cursos_vagas)
+        if not codcurs:
+            return df
+        disc_por_cur: dict[int, set[str]] = {
+            c: set(g_pairs.loc[g_pairs["codcur"] == c, "coddis"]) for c in codcurs
+        }
+    else:
+        warnings.warn(
+            "REPLICADO_CURSOS_VAGAS não definido: cursos de vagas_curso_* "
+            "derivados dinamicamente (ativos hoje + top por contagem). Defina "
+            "a variável no .env para um esquema de colunas estável entre "
+            "extrações (ver .env.example / AGENTS.md).",
+            stacklevel=2,
+        )
+        # Cursos ativos HOJE (≥1 habilitação vigente).
+        hoje = pd.Timestamp.now().normalize()
+        ativas_hoje = hb[
+            (hb["dtaatvhab"].isna() | (hb["dtaatvhab"] <= hoje))
+            & (hb["dtadtvhab"].isna() | (hb["dtadtvhab"] > hoje))
+        ]
+        codcurs_ativos = sorted(ativas_hoje["codcur"].astype(int).unique().tolist())
+        if not codcurs_ativos:
+            return df
+        codcurs_grade = set(g_pairs["codcur"].unique())
+        candidatos = [c for c in codcurs_ativos if c in codcurs_grade]
+        if not candidatos:
+            return df
+        disc_por_cur = {
+            c: set(g_pairs.loc[g_pairs["codcur"] == c, "coddis"]) for c in candidatos
+        }
+        contagem = {c: len(disc_por_cur[c] & discis_set) for c in candidatos}
+        codcurs = sorted(contagem, key=lambda c: contagem[c], reverse=True)[
+            : cfg.top_cursos
+        ]
+        # Reaproveita apenas os conjuntos de código de disciplinas dos escolhidos.
+        disc_por_cur = {c: disc_por_cur[c] for c in codcurs}
 
     # Reconstrói vagas por (codcur, ano) — cache p/ reuso entre colunas do
     # mesmo curso. Vetoriza por mapa ano -> vagas.

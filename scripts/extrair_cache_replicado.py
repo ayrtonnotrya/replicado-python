@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from replicado.connection import DB  # noqa: E402
+from replicado.dataset_alocacao import COLS_TURMAGR  # noqa: E402
 
 load_dotenv()
 
@@ -32,14 +33,6 @@ CACHE_DIR = Path("temp/cache_maquina_tempo")
 
 _ANO_MIN = int(os.getenv("REPLICADO_ANO_MIN", "2010"))
 _ANO_MAX_DEFAULT = int(os.getenv("REPLICADO_ANO_MAX", str(datetime.now().year)))
-
-COLS_TURMAGR = """
-    coddis, verdis, codtur, tiptur, tipmtr, dtainitur, dtafimtur, statur,
-    dtacritur, numvagtur, numvagopt, numvagoptlre, numvagturcpl, numvagecr,
-    numins, numinsopt, numinsoptlre, numinscpl, numinsecre = NULL,
-    numpmtobg, numpmtopt, numpmtoptlre, numpmtcpl, numpmtecr,
-    nummtr, nummtropt, nummtroptlre, nummtrturcpl, nummtrecr
-""".replace("numinsecre = NULL", "numinsecr")
 
 COLS_HIST = """
     codpes, coddis, verdis, codtur, dtacrihst, stamtr, dtaultalt,
