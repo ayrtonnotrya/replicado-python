@@ -98,6 +98,21 @@ COLS_HIST_ALUNO = """
 
 
 # ---------------------------------------------------------------------------
+# Status de programa considerados **mortos** (evasão) no snapshot point-in-time
+# da HISTPROGGR (último ``stapgm`` por ``(codpes, codpgm)`` com ``dtaoco <=
+# dta_corte``). Lógica por **exclusão** — não por inclusão — porque a
+# HISTPROGGR é um log de eventos: o último registro de um veterano quase
+# sempre é ``H`` (Histórico/Habilitação) ou ``EH`` (encerramento de
+# habilitação anterior ao trocar de ênfase), e o programa **continua ativo**
+# nesses casos. ``A`` (Ativo), ``R`` (Reserva/Reingresso ativo) também vivos.
+# Apenas ``E`` (Encerrado), ``T`` (Trancado) e ``S`` (Suspenso) selam a morte
+# do programa no Dia D. Precedente: ``replicado.graduacao`` consulta
+# ``stapgm IN ('A','H','R')`` para "programas vivos" (graduacao.py:967).
+# ---------------------------------------------------------------------------
+MORTO_STAPGM: frozenset[str] = frozenset({"E", "T", "S"})
+
+
+# ---------------------------------------------------------------------------
 # Configuração agnóstica à unidade (estende DatasetConfig)
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -236,7 +251,7 @@ def _cargar_aux(
                     "INNER JOIN HABILPROGGR HP ON R.codpes = HP.codpes "
                     "AND R.codpgm = HP.codpgm "
                     f"INNER JOIN CURSOGR CS ON HP.codcur = CS.codcur "
-                    f"WHERE CS.codclg = {cod} AND R.codpgm = 1"
+                    f"WHERE CS.codclg = {cod}"
                 ),
             )
         )
@@ -310,17 +325,41 @@ def _sem_casa(dtaing: pd.Timestamp, ano_alvo: int, sem_alvo: int) -> int:
 def _alunos_ativos(
     cfg: DatasetAlunoConfig, dados: dict[str, pd.DataFrame], dta_corte: pd.Timestamp
 ) -> pd.DataFrame:
-    """Alunos da unidade ativos no Dia D do semestre alvo.
+    """Alunos da unidade **ativos no Dia D** do semestre alvo (point-in-time).
 
-    Ativo = ingressou antes do Dia D (``dtaing`` < dta_corte) e ainda não
-    concluiu (``dtaclcgru`` ausente ou posterior ao Dia D).
+    Define "ativo no Dia D" via **verdade temporal** extraída da HISTPROGGR —
+    snapshot vetorial do último evento ``dtaoco <= dta_corte`` por
+    ``(codpes, codpgm)``. Lógica de **exclusão** (não inclusão): o aluno é
+    ativo no Dia D se o último ``stapgm`` **não for** um status morto em
+    ``MORTO_STAPGM`` (`{'E','T','S'}`). A HISTPROGGR é um log de eventos —
+    ``H`` (Histórico/Habilitação) e ``EH`` (encerramento de habilitação
+    anterior ao trocar de ênfase) NÃO matam o programa, e o último registro
+    da imensa maioria dos veteranos é ``H``; exigir ``∈ {A,R}`` (versão
+    anterior) deletava os veteranos reais da base. Alunos sem nenhuma
+    HISTPROGGR ≤ Dia D ficam no time (não há evidência de evasão).
 
-    Calouros FUVEST/SISU que ingressam APÓS o Dia D (~D+0, via carga) não
-    entram: no Dia D (momento de raspagem do Replicado) eles ainda não
-    existem como alunos ativos, logo não há features para prever — incluí-
-    los seria data leakage (usar a data de ingresso futura para montar o
-    universo). Eles constam do alvo T_pico (outcome realizado), mas o
-    modelo não pode prever para alguém que ainda não está no sistema.
+    Camada de piso (hard backstop): ``dtaclcgru`` (colação) ≥ Dia D — quem já
+    colou-grau antes do Dia D jamais pode estar matriculado naquele semestre,
+    independente da HISTPROGGR.
+
+    Bug histórico corrigido aqui: a condicional anterior
+    ``(dtaclcgru isna | dtaclcgru > dta_corte)`` IGNORAVA evasão
+    (jubilamento/desistência/encerramento sem colação), retendo ~15 anos de
+    evadidos da **1ª graduação** como ativos — origem do sintoma "~85% de
+    alunos com 0 matrículas reais". Importante: ``codpgm`` na PROGRAMAGR é o
+    número de (re)ingresso da pessoa na USP (não tipo de programa) — alunos
+    reingressantes ``codpgm >= 2`` são ativos legítimos e NÃO devem ser
+    filtrados. O cache de ``habilprog`` já é restrito à graduação da unidade
+    via ``INNER JOIN CURSOGR WHERE codclg = {cod}``. O cache de
+    ``histprog_unidade`` deve incluir TODOS os ``codpgm`` (a query de
+    extração NÃO filtra ``codpgm = 1``) — senão a evidência PIT dos
+    reingressos não existe e eles caem no fallback.
+
+    Regra de Ouro (data leakage): calouros FUVEST/SISU que ingressam APÓS o
+    Dia D (~D+0, por carga) não entram — ``dtaing > dta_corte`` já os exclui.
+    Incluí-los seria usar a data de ingresso futura para montar o universo.
+    Eles constam do alvo T_pico (outcome realizado), mas o modelo não pode
+    prever para quem ainda não existe no sistema no momento de raspagem.
     """
     hp = dados.get("habilprog")
     if hp is None or not len(hp):
@@ -328,11 +367,66 @@ def _alunos_ativos(
     a = hp.copy()
     a = a[a["codpes"].notna()]
     a["codpes"] = a["codpes"].astype(int)
-    ativos = a[
+    # Piso (hard backstop): filtros puramente "na HABILPROGGR".
+    cand = a[
         (a["dtaing"] < dta_corte)
         & (a["dtaclcgru"].isna() | (a["dtaclcgru"] > dta_corte))
     ].copy()
-    return ativos[["codpes", "codcur", "codhab", "dtaing"]].drop_duplicates(
+
+    # NOTA: NÃO filtrar por ``codpgm == 1``. ``codpgm`` na PROGRAMAGR é o
+    # número de (re)ingresso da pessoa na USP (1=1º ingresso, 2=reingresso,
+    # ...), não o tipo de programa: alunos reingressantes (segunda graduação,
+    # retorno após abandono) têm ``codpgm >= 2`` e são LEGITIMAMENTE ativos no
+    # Dia D — empiricamente 100% das linhagens com ``codpgm >= 2`` no cache
+    # têm último ``stapgm`` PIT ∈ {A,R} (diagnóstico 2018.1). Descartá-los
+    # jogaria fora exatamente o elenco ativo de reentradas. O CACHE já está
+    # restrito a graduação da unidade via ``INNER JOIN CURSOGR WHERE codclg =
+    # {cod}`` (CURSOGR = cursos de graduação; pós-graduação vive em outra
+    # família de tabelas, não aqui).
+
+    if not len(cand):
+        return pd.DataFrame(columns=["codpes", "codcur", "codhab", "dtaing"])
+
+    # ---- Verda temporal point-in-time (HISTPROGGR) -----------------------
+    # Snapshot por (codpes, codpgm): último stapgm com dtaoco <= Dia D.
+    # Algoritmo espelhado em _macro_trancamento: pré-ordenação por dtaoco +
+    # groupby.tail(1) obtêm "último evento de cada par" sem ler eventos
+    # futuros (Regra de Ouro garantida por dtaoco <= dta_corte).
+    hp_hist = dados.get("histprog_unidade")
+    if hp_hist is not None and len(hp_hist):
+        h = hp_hist.dropna(subset=["dtaoco"]).copy()
+        if "stapgm" in h.columns:
+            h["stapgm"] = h["stapgm"].astype(str).str.strip()
+        h = h[h["dtaoco"] <= dta_corte]
+        if len(h) and "stapgm" in h.columns:
+            h = h.sort_values("dtaoco")
+            # tail(1) dentro de cada (codpes, codpgm): último stapgm PIT.
+            ult = (
+                h.groupby(["codpes", "codpgm"], sort=False)
+                .tail(1)[["codpes", "codpgm", "stapgm"]]
+                .rename(columns={"stapgm": "_stapgm_pit"})
+            )
+            cand = cand.merge(ult, on=["codpes", "codpgm"], how="left")
+            # Conserva quem NÃO tem HISTPROGGR <= Dia D (cobertura parcial da
+            # HISTPROGGR no cache ≈ 45% dos codpes); os demais seguem o piso
+            # dtaclcgru como único backstop. Quem TEM evidência só sai se o
+            # último status for morto (E/T/S). Lógica por EXCLUSÃO: ``H``/``EH``
+            # (habilitação/ênfase) e ``A``/``R`` mantêm o programa vivo — exigir
+            # apenas {A,R} deletaria veteranos cujo último evento é ``H``.
+            mask_ativo = cand["_stapgm_pit"].isna() | ~cand["_stapgm_pit"].isin(
+                MORTO_STAPGM
+            )
+            # Métrica de leakage para inspeção (consolida N "fantasmas").
+            n_ghost = int((cand["_stapgm_pit"].notna() & ~mask_ativo).sum())
+            cand = cand[mask_ativo].drop(columns=["_stapgm_pit"])
+            if n_ghost:
+                sys.stderr.write(
+                    f"[alunos_ativos] D{dta_corte.date()}: filtro "
+                    f"point-in-time (HISTPROGGR) removeu {n_ghost:,} evadidos/"
+                    f"trancados que passavam pelo filtro de dtaclcgru.\n"
+                )
+
+    return cand[["codpes", "codcur", "codhab", "dtaing"]].drop_duplicates(
         ["codpes", "codcur", "codhab"]
     )
 

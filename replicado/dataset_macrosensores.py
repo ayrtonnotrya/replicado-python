@@ -11,7 +11,8 @@ instante em que o modelo faz sua previsão:
     T0 indica greve/calendário comprimido (gaps negativos ou muito curtos).
 
 2.  ``macro_requerimentos_30d_pre_dia_d`` — **termômetro da burocracia**:
-    contagem de requerimentos da unidade (undergrad, ``codpgm=1``) criados
+    contagem de requerimentos da unidade (undergrad, todos os ``codpgm``)
+    criados
     nos 30 dias que antecedem o Dia D da turma. ``dtacadrqm`` é imutável →
     barreira temporal segura.
 
@@ -44,7 +45,10 @@ Princípios de sobrevivência temporal (a regra do Dia D):
 
 Escopo da unidade (``codundclg``): todos os filtros de student membership
 passam pelo conjunto ``codpes`` derivado de ``HABILPROGGR`` (já em ``dados``
-após ``carregar_dados``), restrito ao undergrad da unidade (``codpgm=1``).
+após ``carregar_dados``), restrito ao undergrad da unidade (todos os ``codpgm``;
+o INNER JOIN com ``CURSOGR`` em ``HABILPROGGR`` já assegura graduação da
+unidade, e ``codpgm`` é nº de (re)ingresso — reingressos ``codpgm >= 2`` são
+ativos legítimos a preservar).
 """
 
 from __future__ import annotations
@@ -108,7 +112,7 @@ def carregar_macrosensores(
     ``dados`` (chaves ``calend``, ``req_unidade``, ``histprog_unidade``).
 
     São filtradas no banco por :class:`DatasetConfig.codundclg` (via JOIN com
-    ``HABILPROGGR`` → ``CURSOGR``) e por ``codpgm=1`` (graduação), de modo a
+    ``HABILPROGGR`` → ``CURSOGR``), de modo a
     restringir o cache a eventos da unidade-alvo.
 
     Migração: renomeados os caches legados ``aux_req_ime_<cod>.pkl`` /
@@ -166,7 +170,7 @@ def carregar_macrosensores(
             f"  FROM HABILPROGGR HP INNER JOIN CURSOGR C ON HP.codcur = C.codcur "
             f"  WHERE C.codclg = {cod} "
             ") UNID ON R.codpes = UNID.codpes AND R.codpgm = UNID.codpgm "
-            f"WHERE R.codpgm = 1 AND R.dtacadrqm >= '{data_min.date().isoformat()}'"
+            f"WHERE R.dtacadrqm >= '{data_min.date().isoformat()}'"
         )
         dados["req_unidade"] = _stream_to_pickle(c, q, "aux:req_unidade")
     r = dados["req_unidade"].copy()
@@ -192,7 +196,7 @@ def carregar_macrosensores(
             f"  FROM HABILPROGGR HP INNER JOIN CURSOGR C ON HP.codcur = C.codcur "
             f"  WHERE C.codclg = {cod} "
             f") UNID ON h.codpes = UNID.codpes AND h.codpgm = UNID.codpgm "
-            f"WHERE h.codpgm = 1 AND h.dtaoco >= '{data_min.date().isoformat()}'"
+            f"WHERE h.dtaoco >= '{data_min.date().isoformat()}'"
         )
         dados["histprog_unidade"] = _stream_to_pickle(c, q, "aux:histprog_unidade")
     h = dados["histprog_unidade"].copy()

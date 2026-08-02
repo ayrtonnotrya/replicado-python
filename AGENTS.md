@@ -96,6 +96,49 @@ Ordem de execução:
 - Valores de estmtr capturados em datas diferentes por semestre (alguns ~45
   dias antes das aulas): ruído documentado, não calibrar offset por semestre.
 
+### Alunos ativos no Dia D (pipeline Micro Targeting — `dataset_aluno.py`)
+
+- **Regra (corte temporal point-in-time)**: um aluno é "ativo no Dia D"
+  sse, no snapshot de `HISTPROGGR` (último `stapgm` por `(codpes, codpgm)`
+  com `dtaoco <= dta_corte`), o status **NÃO** é um status morto
+  (`{E, T, S}` → `MORTO_STAPGM`). Lógica por **exclusão**, não inclusão: a
+  HISTPROGGR é um log de eventos, e o último registro de quase todo
+  veterano é `H` (Histórico/Habilitação) ou `EH` (encerramento de
+  habilitação anterior ao trocar de ênfase) — o programa **continua
+  ativo**. Exigir `stapgm ∈ {A,R}` (versão rejeitada) deletava os
+  veteranos reais e desabava y=1 de ~1.500 para ~500/semestre. Precedente:
+  `replicado.graduacao` consulta `stapgm IN ('A','H','R')` para
+  "programas vivos". Piso `dtaclcgru` (colação) ≥ Dia D permanece como
+  backstop; alunos sem HISTPROGGR ≤ Dia D (cache parcial) ficam pelo piso.
+- **Bug histórico corrigido** (`_alunos_ativos`): a condicional anterior
+  `(dtaclcgru isna | dtaclcgru > dta_corte)` IGNORAVA evasão
+  (jubilamento/encerramento sem colação), retendo ~15 anos de evadidos da
+  **1ª graduação** como ativos — origem do sintoma "~85% de alunos com 0
+  matrículas reais". Diagnóstico: `scripts/diagnostico_alunos_ativos.py`
+  (roda sobre cache, sem túnel): 2018.1 removeu 2.120 evadidos/trancados
+  (E/T); 2022.2 análogo. Todos os fantasmas são `codpgm == 1` com `stapgm
+  ∈ {E,T}`. y=1 cai só ~1% (1.465→1.452 em 2018.1) — veteranos com `H`
+  preservados.
+- **`codpgm` é NÚMERO de (re)ingresso, não tipo de programa**: 1=1º
+  ingresso, 2=reingresso/2ª graduação, etc. Alunos `codpgm >= 2` são
+  LEGITIMAMENTE ativos no Dia D (reentradas) e **não** devem ser
+  filtrados. O cache de `habilprog` já é restrito à graduação da unidade
+  via `INNER JOIN CURSOGR WHERE codclg = {cod}` (CURSOGR = graduação; pós
+  vive em outra família de tabelas).
+- **Cache de `histprog_unidade`/`req_unidade`/`requer` deve incluir TODOS
+  os `codpgm`**: as queries de extração em `dataset_macrosensores.py` e
+  `dataset_aluno.py` **não** filtram `codpgm = 1` (filtro removido) — o
+  `INNER JOIN CURSOGR` já assegura graduação da unidade. Limitar
+  `codpgm = 1` no SQL quebrava o PIT dos reingressos (codpgm>=2 sumiam do
+  cache e caíam no fallback `isna`). **Exige re-extração do cache** (os
+  pickles atuais só têm codpgm=1): após alterar o SQL, rode
+  `build_dataset_aluno.py --forcar-extracao` com o túnel SSH ativo.
+- **Negativos legítimos ≠ leakage**: alunos ativos no Dia D que não se
+  matriculam no semestre são `y=0` válidos (negativo que o modelo aprende
+  a prever), não "fantasmas" a corrigir. O leakage corrigido é só a
+  população (1) evadidos rotulados de ativos; a (2) ativos-sem-matrícula
+  é label bom.
+
 ## Convenções
 
 - Cache local: `temp/cache_maquina_tempo/` (pickles; NÃO usar parquet —
