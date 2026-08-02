@@ -405,7 +405,7 @@ def carregar_dados(
         (
             "habilit",
             f"SELECT H.codcur, H.codhab, H.nomhab, H.numvaghab, H.numvaghabcpl, "
-            f"H.numvaghabcvn, H.dtaatvhab, H.dtadtvhab "
+            f"H.numvaghabcvn, H.dtaatvhab, H.dtadtvhab, H.perhab "
             f"FROM HABILITACAOGR H "
             f"INNER JOIN CURSOGR C ON H.codcur = C.codcur "
             f"WHERE C.codclg = {cod}",
