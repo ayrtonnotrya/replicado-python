@@ -136,6 +136,20 @@ class DatasetAlunoConfig(DatasetConfig):
     # Limite (por aluno/semestre) de candidatos negativos por disciplina, para
     # conter a explosão combinatória quando há muitas turmas da mesma coddis.
     max_neg_turmas_por_disc: int = 6
+    # Excluir "alunos fantasmas" — ativos no Dia D com ZERO matrículas IME no
+    # semestre alvo — da geração de negativos (y=0). Default False: preserva o
+    # comportamento baseline. Flag de PESQUISA para análise de impacto em
+    # inferência; ``selection-on-outcome`` intencional (ver AGENTS.md), NÃO
+    # usar o dataset resultante como se fosse "limpo" em produção. Sufixo do
+    # arquivo de saída: ``_sf``.
+    excluir_fantasmas: bool = False
+    # Balancear a classe L (livres): amostra negativos L entre alunos com
+    # ≥1 matrícula no semestre (qualquer tipo) até ``pos_l/neg_L`` atingir a
+    # razão média de O e E/C (média das razões pos/neg) calculada_por semestre
+    # sobre os próprios matriculados. Default False: preserva baseline.
+    # ``max_neg_turmas_por_disc`` NÃO se aplica a L (volume controlado pelo
+    # alvo de razão). Sufixo do arquivo de saída: ``_bl``.
+    balancear_l: bool = False
     saida: Path = SAIDA_DEFAULT
 
     @classmethod
@@ -159,13 +173,21 @@ class DatasetAlunoConfig(DatasetConfig):
             v = env_int(name)
             if v is not None:
                 overrides.setdefault(field, v)
-        if env_bool(os.getenv("REPLICADO_ALUNO_USAR_INTENCAO") or "") is not None:
-            ui = env_bool(os.getenv("REPLICADO_ALUNO_USAR_INTENCAO") or "")
-            if ui is not None:
-                overrides.setdefault("usar_intencao_requerimento", ui)
+        ui = env_bool("REPLICADO_ALUNO_USAR_INTENCAO")
+        if ui is not None:
+            overrides.setdefault("usar_intencao_requerimento", ui)
         v = env_int("REPLICADO_ALUNO_MAX_NEG_DISC")
         if v is not None:
             overrides.setdefault("max_neg_turmas_por_disc", v)
+        # Flags exploratórias: defaults False preservam o baseline.
+        # Bug-fix: o padrão antigo ``env_bool(os.getenv("X") or "")`` passava o
+        # VALOR como ``name`` (os.getenv("1")) e retornava sempre None — var.
+        ef = env_bool("REPLICADO_ALUNO_EXCLUIR_FANTASMAS")
+        if ef is not None:
+            overrides.setdefault("excluir_fantasmas", ef)
+        bl = env_bool("REPLICADO_ALUNO_BALANCEAR_L")
+        if bl is not None:
+            overrides.setdefault("balancear_l", bl)
         # ``saida`` default já é dataset_aluno.csv; permite override via env.
         s = os.getenv("REPLICADO_ALUNO_SAIDA")
         if s and s.strip():
@@ -803,6 +825,178 @@ def _negativos_via_requerimento(
     return r[["codpes", "coddis", "codtur"]].drop_duplicates()
 
 
+# ---------------------------------------------------------------------------
+# Negativos L (livres) balanceados — flag ``balancear_l``
+# ---------------------------------------------------------------------------
+def _negativos_l_balanceados(
+    cfg: DatasetAlunoConfig,
+    pos: pd.DataFrame,
+    neg: pd.DataFrame,
+    necess: pd.DataFrame,
+    aprovados: pd.DataFrame,
+    tur: pd.DataFrame,
+    sem_alvo: int,
+) -> pd.DataFrame:
+    """Negativos L (livres) amostrados para balancear a classe no semestre.
+
+    Decisões de design (ver análise pré-implementação no histórico):
+
+    - **Pool**: alunos com ≥1 matrícula no semestre (qualquer tipo — derivado
+      de ``pos``) × coddis L ofertadas = coddis **fora do currículo elegível**
+      do aluno (não presentes em ``necess``), não aprovadas, ainda não em
+      ``pos``/``neg``. Decision 1.A.
+    - **Razão-alvo**: média das razões ``pos/neg`` de O e E/C, calculada
+      **sobre matriculados** (mesmo pool do L), **por semestre**. Decisions
+      2.1, 3.A, 4.A.
+    - **Volume**: amostra ``to_sample = max(0, target_neg_l − existing_neg_l)``
+      do pool, SEM ``max_neg_turmas_por_disc`` para L. Decision 5.B.
+    - **Reprodutibilidade**: ``random_state`` derivado de ``codundclg`` e
+      ``sem_alvo`` (estável entre runs).
+
+    ``pos``/``neg`` aqui já contêm os negativos via REQUERIMENTOGR
+    (``existing_neg_l``), que são contados no alvo para não re-amostrar nem
+    duplicar. ``neg`` é o DataFrame consolidado após ``req_cand`` em
+    :func:`_build_matriz_sem`.
+    """
+    empty = pd.DataFrame(
+        columns=["codpes", "coddis", "codtur", "alvo_matriculado"]
+    )
+    if not len(pos):
+        return empty
+
+    def _s(s: pd.Series) -> pd.Series:
+        return s.astype(str).str.strip().str.upper()
+
+    # ---- Status lookup: (codpes, coddis) → status O/E/C/L ---------------
+    status_lookup = (
+        necess[["codpes", "coddis", "status_obrigatoriedade_otimista"]]
+        .drop_duplicates(["codpes", "coddis"])
+        .copy()
+    )
+    status_lookup["codpes"] = status_lookup["codpes"].astype(int)
+    status_lookup["coddis"] = _s(status_lookup["coddis"])
+    status_lookup = status_lookup.rename(
+        columns={"status_obrigatoriedade_otimista": "st"}
+    )
+
+    def _with_status(df: pd.DataFrame) -> pd.DataFrame:
+        d = df[["codpes", "coddis"]].copy()
+        d["codpes"] = d["codpes"].astype(int)
+        d["coddis"] = _s(d["coddis"])
+        d = d.merge(status_lookup, on=["codpes", "coddis"], how="left")
+        d["st"] = d["st"].fillna("L")
+        return d
+
+    # ---- Conta positivos por status (pos é só matriculados) ----------
+    pos_s = _with_status(pos)
+    pos_o = int((pos_s["st"] == "O").sum())
+    pos_ec = int((pos_s["st"] == "E/C").sum())
+    pos_l = int((pos_s["st"] == "L").sum())
+
+    if pos_l == 0:
+        return empty
+
+    # ---- Conta negativos O/E/C entre matriculados (mesmo universo) -----
+    codpes_matriculados = set(pos["codpes"].astype(int))
+    neg_matr = neg[neg["codpes"].astype(int).isin(codpes_matriculados)]
+    neg_matr_s = _with_status(neg_matr) if len(neg_matr) else pos_s.iloc[0:0].copy()
+    neg_o = int((neg_matr_s["st"] == "O").sum())
+    neg_ec = int((neg_matr_s["st"] == "E/C").sum())
+    existing_neg_l = int((neg_matr_s["st"] == "L").sum())
+
+    # ---- Razão-alvo: média das razões pos/neg de O e E/C --------------
+    razoes = [r for r in (
+        pos_o / neg_o if neg_o > 0 else None,
+        pos_ec / neg_ec if neg_ec > 0 else None,
+    ) if r is not None]
+    if not razoes:
+        return empty
+    razao_alvo = float(np.mean(razoes))
+    if not razao_alvo > 0:
+        return empty
+
+    target_neg_l = int(round(pos_l / razao_alvo))
+    to_sample = max(0, target_neg_l - existing_neg_l)
+    if to_sample <= 0:
+        return empty
+
+    # ---- Pool: matriculados × coddis L ofertadas (fora do currículo) ---
+    # Anti-join contra necess (fora do currículo) e aprovados, via
+    # merges com marcadores, tolerantes a divergências de dtype.
+    matr = pd.DataFrame({"codpes": sorted(codpes_matriculados)})
+    matr["codpes"] = matr["codpes"].astype(int)
+
+    offered = tur[["coddis"]].drop_duplicates().copy()
+    offered["coddis"] = _s(offered["coddis"])
+
+    pool_cd = matr.merge(offered, how="cross")
+    pool_cd["coddis"] = _s(pool_cd["coddis"])
+
+    # Remove pares que estão no currículo elegível do aluno (status O/E/C/L
+    # curricular). Restam apenas coddis FORA do currículo = L desta aluno.
+    nec_cd = (
+        necess[["codpes", "coddis"]].drop_duplicates(["codpes", "coddis"]).copy()
+    )
+    nec_cd["codpes"] = nec_cd["codpes"].astype(int)
+    nec_cd["coddis"] = _s(nec_cd["coddis"])
+    pool_cd = pool_cd.merge(
+        nec_cd.assign(_n=1), on=["codpes", "coddis"], how="left"
+    )
+    pool_cd = pool_cd[pool_cd["_n"].isna()].drop(columns="_n")
+
+    # Remove disciplinas já aprovadas pelo aluno.
+    ap_cd = aprovados[["codpes", "coddis"]].drop_duplicates().copy()
+    ap_cd["codpes"] = ap_cd["codpes"].astype(int)
+    ap_cd["coddis"] = _s(ap_cd["coddis"])
+    pool_cd = pool_cd.merge(
+        ap_cd.assign(_a=1), on=["codpes", "coddis"], how="left"
+    )
+    pool_cd = pool_cd[pool_cd["_a"].isna()].drop(columns="_a")
+    if not len(pool_cd):
+        return empty
+
+    # Expande para (codpes, coddis, codtur) via oferta de turmas.
+    tur_cd = tur[["coddis", "codtur"]].drop_duplicates().copy()
+    tur_cd["coddis"] = _s(tur_cd["coddis"])
+    pool = pool_cd.merge(tur_cd, on="coddis", how="inner")
+    pool["codtur"] = pool["codtur"].astype(str)
+    if not len(pool):
+        return empty
+
+    # Remove (codpes, coddis, codtur) já presentes em pos OU neg (incl. req_cand).
+    occupied = pd.concat(
+        [pos[["codpes", "coddis", "codtur"]], neg[["codpes", "coddis", "codtur"]]],
+        ignore_index=True,
+    ).drop_duplicates()
+    occupied["codpes"] = occupied["codpes"].astype(int)
+    occupied["coddis"] = _s(occupied["coddis"])
+    occupied["codtur"] = occupied["codtur"].astype(str)
+    pool = pool.merge(
+        occupied.assign(_o=1), on=["codpes", "coddis", "codtur"], how="left"
+    )
+    pool = pool[pool["_o"].isna()].drop(columns="_o")
+    if not len(pool):
+        return empty
+
+    # ---- Amostragem ao alvo de razão (sem max_neg_turmas_por_disc p/ L) --
+    n = min(to_sample, len(pool))
+    if n < len(pool):
+        seed = int(cfg.codundclg) * 1000003 + int(sem_alvo)
+        pool = pool.sample(n=n, random_state=seed)
+
+    # Enriquecer com as colunas de ``tur`` (mesmo formato de ``neg``).
+    tur_full = tur[["coddis", "codtur", "sufixo", "ano_sem", "sem_tipo",
+                    "dtainitur"]].drop_duplicates(["coddis", "codtur"]).copy()
+    tur_full["coddis"] = _s(tur_full["coddis"])
+    tur_full["codtur"] = tur_full["codtur"].astype(str)
+    neg_l = pool[["codpes", "coddis", "codtur"]].merge(
+        tur_full, on=["coddis", "codtur"], how="left"
+    )
+    neg_l["alvo_matriculado"] = 0
+    return neg_l[["codpes", "coddis", "codtur", "sufixo", "ano_sem", "sem_tipo",
+                 "dtainitur", "alvo_matriculado"]]
+
+
 def _build_matriz_sem(
     cfg: DatasetAlunoConfig,
     dados: dict[str, pd.DataFrame],
@@ -867,6 +1061,13 @@ def _build_matriz_sem(
     pos = pos[pos["_ap"].isna()].drop(columns="_ap", errors="ignore")
     pos["alvo_matriculado"] = 1
 
+    # Universo de alunos que efetivamente matricularam em ≥1 turma no
+    # semestre (origem de y=1). Usado por ``excluir_fantasmas`` (filtro de
+    # negativos) e por ``balancear_l`` (pool de negativos L).
+    codpes_matriculados: set[int] = (
+        set(pos["codpes"].astype(int)) if len(pos) else set()
+    )
+
     # ---- Negativos (y=0): obrigatórias/eletivas pendentes, na janela ------
     # Junta necessidade (aluno, coddis) com créditos reprovados/trancamento.
     cand = necess.merge(
@@ -888,6 +1089,11 @@ def _build_matriz_sem(
     # Horizonte temporal: semestre ideal ≤ sem_casa + horizonte.
     cand["min_numsemidl"] = pd.to_numeric(cand["min_numsemidl"], errors="coerce")
     cand = cand[cand["min_numsemidl"] <= cand["sem_casa"] + cfg.horizonte_sem]
+
+    # Flag ``excluir_fantasmas``: mantém só negativos de alunos com ≥1
+    # matrícula no semestre (``codpes_matriculados``). ``pos`` fica intacto.
+    if cfg.excluir_fantasmas:
+        cand = cand[cand["codpes"].isin(codpes_matriculados)]
 
     # Normativa: para o ``neg`` SÓ usamos as 3 chaves primárias
     # (codpes, coddis, codtur) -- TODAS as features curriculares/históricas
@@ -927,6 +1133,8 @@ def _build_matriz_sem(
         req_cand = _negativos_via_requerimento(
             cfg, dados, alunos, turmas_sem, aprovados, dta_corte
         )
+        if cfg.excluir_fantasmas and len(req_cand):
+            req_cand = req_cand[req_cand["codpes"].isin(codpes_matriculados)]
         if len(req_cand):
             # Mesma padronização: só chaves primárias.
             req_cand = req_cand.merge(
@@ -947,6 +1155,16 @@ def _build_matriz_sem(
             req_cand = req_cand[req_cand["_e"].isna()].drop(columns="_e", errors="ignore")
             req_cand["alvo_matriculado"] = 0
             neg = pd.concat([neg, req_cand], ignore_index=True)
+
+    # ---- Negativos L (livres) balanceados — flag ``balancear_l`` ----------
+    # ``neg`` aqui já consolida grade + REQUERIMENTOGR; ``_negativos_l_balanceados``
+    # conta os neg-L existentes no alvo de razão para não re-amostrar nem duplicar.
+    if cfg.balancear_l and len(pos) and len(neg):
+        neg_l = _negativos_l_balanceados(
+            cfg, pos, neg, necess, aprovados, tur, sem_alvo
+        )
+        if len(neg_l):
+            neg = pd.concat([neg, neg_l], ignore_index=True)
 
     base = pd.concat([pos, neg], ignore_index=True)
     if not len(base):
@@ -1368,6 +1586,24 @@ COLUNAS_DESCARTE_ALUNO = [
 ]
 
 
+def _saida_com_flags(cfg: DatasetAlunoConfig) -> Path:
+    """Caminho de saída com sufixo indicando as flags exploratórias ativas,
+    para **nunca sobrescrever** o dataset baseline.
+
+    Sufixos curtos (decisão 6): ``_sf`` (excluir_fantasmas), ``_bl``
+    (balancear_l), ``_sf_bl`` (ambas). Com nenhuma flag ativa, retorna o
+    caminho original sem alteração — o baseline fica bit-identico.
+    """
+    sufixo = ""
+    if cfg.excluir_fantasmas:
+        sufixo += "_sf"
+    if cfg.balancear_l:
+        sufixo += "_bl"
+    if not sufixo:
+        return cfg.saida
+    return cfg.saida.with_name(f"{cfg.saida.stem}{sufixo}{cfg.saida.suffix}")
+
+
 # ---------------------------------------------------------------------------
 # Montagem final
 # ---------------------------------------------------------------------------
@@ -1380,10 +1616,12 @@ def montar_dataset_aluno(
     Sai em ``cfg.saida`` (CSV). Retorna o DataFrame.
     """
     cfg = cfg or DatasetAlunoConfig.from_env()
+    saida_efetiva = _saida_com_flags(cfg)
     print(
         f"=== DatasetAlunoConfig ===\n  codundclg: {cfg.codundclg}\n  prefixos: {cfg.prefixos}\n"
         f"  anos: {cfg.ano_min}-{cfg.ano_max}\n  horizonte_sem: {cfg.horizonte_sem}\n"
-        f"  saida: {cfg.saida}"
+        f"  excluir_fantasmas: {cfg.excluir_fantasmas}\n  balancear_l: {cfg.balancear_l}\n"
+        f"  saida: {saida_efetiva}"
     )
     dados = carregar_dados_aluno(cfg, forcar=forcar_extracao)
 
@@ -1401,7 +1639,7 @@ def montar_dataset_aluno(
     col_id = ["id_aluno", "coddis", "codtur", "sufixo", "ano_sem", "sem_tipo"]
     descarte = set(COLUNAS_VAZAMENTO_ALUNO) | set(COLUNAS_DESCARTE_ALUNO)
 
-    cfg.saida.parent.mkdir(parents=True, exist_ok=True)
+    saida_efetiva.parent.mkdir(parents=True, exist_ok=True)
     n_linhas = 0
     n_pos = 0
     header_written = False
@@ -1447,7 +1685,7 @@ def montar_dataset_aluno(
             base = base[keep]
 
             # Escreve chunk: header só na 1ª fatia, append senão.
-            base.to_csv(cfg.saida, mode='a' if header_written else 'w', index=False, header=(not header_written))
+            base.to_csv(saida_efetiva, mode='a' if header_written else 'w', index=False, header=(not header_written))
             header_written = True
             n_linhas += len(base)
             if "alvo_matriculado" in base.columns:
@@ -1458,12 +1696,12 @@ def montar_dataset_aluno(
         return pd.DataFrame(columns=col_id + ["alvo_matriculado"])
 
     print(
-        f"\nDataset salvo em {cfg.saida} "
+        f"\nDataset salvo em {saida_efetiva} "
         f"({n_linhas} linhas, {len(final_cols)} colunas, pos={n_pos} "
         f"neg={n_linhas - n_pos})"
     )
     # Leitura leve para retorno (sample inicial) — opcional.
-    df = pd.read_csv(cfg.saida, nrows=1000)
+    df = pd.read_csv(saida_efetiva, nrows=1000)
     return df
 
 
@@ -1491,6 +1729,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     p.add_argument("--forcar-extracao", action="store_true")
     p.add_argument("--saida", type=Path, default=None)
+    p.add_argument(
+        "--excluir-fantasmas", dest="excluir_fantasmas", action="store_true",
+        help="Exclui alunos com zero matrículas no semestre dos negativos "
+             "(sufixo _sf; selection-on-outcome para análise de inferência)",
+    )
+    p.add_argument(
+        "--balancear-l", dest="balancear_l", action="store_true",
+        help="Amostra negativos L entre alunos com ≥1 matrícula até a razão "
+             "média O/E/C (sufixo _bl)",
+    )
     args = p.parse_args(list(argv) if argv is not None else None)
 
     overrides: dict[str, Any] = {}
@@ -1511,6 +1759,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.max_neg_disc is not None:
         overrides["max_neg_turmas_por_disc"] = args.max_neg_disc
     overrides["usar_intencao_requerimento"] = args.usar_intencao_requerimento
+    overrides["excluir_fantasmas"] = args.excluir_fantasmas
+    overrides["balancear_l"] = args.balancear_l
     if args.saida is not None:
         overrides["saida"] = args.saida
 

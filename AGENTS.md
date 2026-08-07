@@ -139,6 +139,43 @@ Ordem de execução:
   população (1) evadidos rotulados de ativos; a (2) ativos-sem-matrícula
   é label bom.
 
+### Flags exploratórias do dataset de aluno (research, defaults OFF)
+
+Implementadas para análise de impacto **sem destruir o baseline**; defaults
+`False` mantêm `temp/dataset_aluno.csv` bit-idêntico ao anterior. A saída
+sempre recebe sufixo curto conforme a combinação de flags (`_sf`, `_bl`,
+`_sf_bl`) via `_saida_com_flags` — nunca sobrescreve o baseline.
+
+- **`excluir_fantasmas`** (`--excluir-fantasmas`, env
+  `REPLICADO_ALUNO_EXCLUIR_FANTASMAS`, sufixo `_sf`): remove dos **negativos**
+  (y=0) os alunos ativos com **zero matrículas no semestre**
+  (`codpes_matriculados = set(pos["codpes"])`; `pos` fica intacto → y=1
+  preservado). É **selection-on-outcome intencional**: no Dia D não se sabe
+  ainda quem terá zero matrículas, então o dataset `_sf` NÃO deve ser usado
+  como "limpo" em produção — serve para medir o impacto de restringir a
+  população a matriculados (objetivo condicional vs populacional).
+- **`balancear_l`** (`--balancear-l`, env `REPLICADO_ALUNO_BALANCEAR_L`,
+  sufixo `_bl`): amostra negativos L (livres) até `pos_L/neg_L` atingir a
+  razão média de O e E/C. Decisões de design (ver histórico):
+  - **Pool** = alunos com ≥1 matrícula no semestre (qualquer tipo) × coddis
+    ofertadas **fora do currículo elegível** do aluno (não em `necess`), não
+    aprovadas, ainda não em `pos`/`neg` (incl. REQUERIMENTOGR).
+  - **Razão-alvo** = média das razões `pos/neg` de O e E/C, calculada **sobre
+    matriculados** (mesmo universo do pool) e **por semestre**.
+  - **Volume** controlado pelo alvo; `max_neg_turmas_por_disc` NÃO se aplica
+    a L (decisão 5.B).
+  - Amostragem com `random_state` derivado de `(codundclg, sem_alvo)` →
+    reprodutível.
+- **Bug latente corrigido no `from_env`**: o padrão antigo
+  `env_bool(os.getenv("X") or "")` passava o **valor** como `name`
+  (virava `os.getenv("1")`) e retornava sempre `None` — as flags por env
+  nunca funcionavam (incluindo `REPLICADO_ALUNO_USAR_INTENCAO`). Agora usa
+  `env_bool("REPLICADO_ALUNO_EXCLUIR_FANTASMAS")` diretamente.
+- Validação (sem túnel, sobre cache, semestre 20181): y=1 preservado
+  (4.817 em todas as combinações); sem linhas duplicadas; `sf` removeu
+  O-neg 117.225→15.977 e E/C-neg 53.849→13.083; `bl` levou L-neg a `round(
+  pos_L / razão média O/E/C)`.
+
 ## Convenções
 
 - Cache local: `temp/cache_maquina_tempo/` (pickles; NÃO usar parquet —
