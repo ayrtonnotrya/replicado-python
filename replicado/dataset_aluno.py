@@ -1311,10 +1311,22 @@ def _status_prerequisito_aluno(
         .apply(set)
         .to_dict()
     )
-    # "Cursou no t-1 sem nota": registro criado, sem rstfim, em turma de t-1.
+    # "Cursou no t-1 sem nota": registro criado antes do Dia D, mas sem
+    # consolidação até o Dia D. Em dumps/extrações executadas hoje, o rstfim
+    # de t-1 já foi preenchido "no futuro" (após o Dia D) — por isso a nota é
+    # considerada pendente no Dia D se rstfim é nulo OU se a última alteração
+    # do registro (dtaultalt) ocorreu em ou após dta_corte (barreira temporal
+    # estrita point-in-time).
     sem_t1 = hist_aluno[hist_aluno["ano_sem"] == t1]
+    mask_pendente_no_dia_d = (
+        (sem_t1["dtacrihst"] < dta_corte)
+        & (
+            sem_t1["rstfim"].isna()
+            | (sem_t1["dtaultalt"].notna() & (sem_t1["dtaultalt"] >= dta_corte))
+        )
+    )
     cursando_t1 = (
-        sem_t1[sem_t1["rstfim"].isna()]
+        sem_t1[mask_pendente_no_dia_d]
         .groupby("codpes", sort=False)["coddis"]
         .apply(set)
         .to_dict()
