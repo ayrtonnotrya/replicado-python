@@ -15,6 +15,8 @@ import pandas as pd
 from replicado.dataset_aluno import (
     DatasetAlunoConfig,
     _alunos_ativos,
+    _build_matriz_sem,
+    _precomputar_mapa,
     _sem_atividade_recente,
 )
 
@@ -105,3 +107,107 @@ def test_alunos_ativos_preserva_sem_histprog_com_atividade() -> None:
     ativos = set(out["codpes"].astype(int))
     assert 101 in ativos and 102 in ativos
     assert 103 not in ativos
+
+
+# ---------------------------------------------------------------------------
+# _precomputar_mapa
+# ---------------------------------------------------------------------------
+def test_precomputar_mapa_deterministico() -> None:
+    dados = {
+        "habilprog": pd.DataFrame(
+            {"codpes": [300, 200, 200, 100], "codpgm": [1, 1, 2, 1]}
+        )
+    }
+    mapa = _precomputar_mapa(dados)
+    assert mapa == {100: "ALU_0001", 200: "ALU_0002", 300: "ALU_0003"}
+    # mesmo id para o mesmo codpes (estável entre execuções/workers)
+    assert _precomputar_mapa(dados) == mapa
+
+
+# ---------------------------------------------------------------------------
+# cross_completo
+# ---------------------------------------------------------------------------
+def _fixture_xc() -> dict[str, pd.DataFrame]:
+    """Cenário sintético mínimo para ``_build_matriz_sem(cross_completo=True)``.
+
+    - ativos: 201, 202 (ingressos recentes → ativos)
+    - currículo C1: D1 obrigatória (sem 1); D2 fora do currículo (livre)
+    - turmas do semestre: D1-1, D1-2, D2-1
+    - matrícula real (pos): 201 em D1-1 → y=1
+    """
+    return {
+        "habilprog": pd.DataFrame(
+            {
+                "codpes": [201, 202],
+                "codpgm": [1, 1],
+                "codcur": [45024, 45024],
+                "codhab": [4, 4],
+                "dtaclcgru": [pd.NaT, pd.NaT],
+                "dtaing": [pd.Timestamp("2023-02-10")] * 2,
+            }
+        ),
+        "histprog_unidade": pd.DataFrame(),
+        "hist_aluno": pd.DataFrame(
+            {
+                "codpes": [201],
+                "coddis": ["D1"],
+                "codtur": ["D1-1"],
+                "dtacrihst": [pd.Timestamp("2024-02-20")],
+                "stamtr": ["M"],
+                "dtaultalt": [pd.NaT],
+                "rstfim": [None],
+                "notfim": [None],
+                "notfim2": [None],
+                "discrl": [None],
+                "aplori": ["C"],
+                "ano_sem": [20241],
+            }
+        ),
+        "curriculo": pd.DataFrame(
+            {
+                "codcrl": ["C1", "C1"],
+                "codcur": [45024, 45024],
+                "codhab": [4, 4],
+                "dtainicrl": [pd.Timestamp("2020-01-01")] * 2,
+                "dtafimcrl": [pd.NaT] * 2,
+                "cgahortot": [120, 120],
+                "sitcrl": ["A", "A"],
+            }
+        ),
+        "grade": pd.DataFrame(
+            {
+                "codcrl": ["C1"],
+                "coddis": ["D1"],
+                "numsemidl": [1],
+                "tipobg": ["O"],
+            }
+        ),
+        "disciplina": pd.DataFrame(
+            {"coddis": ["D1", "D2"], "creaul": [4, 4], "cretrb": [0, 0]}
+        ),
+        "requisito": pd.DataFrame(),
+        "ocup": pd.DataFrame(),
+        "_perhab": pd.DataFrame(),
+    }
+
+
+def test_cross_completo_gera_todos_os_pares() -> None:
+    cfg = _cfg(cross_completo=True)
+    turmas_sem = pd.DataFrame(
+        {
+            "coddis": ["D1", "D1", "D2"],
+            "codtur": ["D1-1", "D1-2", "D2-1"],
+            "sufixo": [41, 42, 43],
+            "ano_sem": [20241] * 3,
+            "sem_tipo": ["1S"] * 3,
+            "dtainitur": [pd.Timestamp("2024-02-20")] * 3,
+        }
+    )
+    b = _build_matriz_sem(cfg, _fixture_xc(), 20241, turmas_sem)
+    assert len(b) == 6  # 2 ativos × 3 turmas
+    # positiva (y=1) exatamente onde há matrícula real: 201 × D1-1
+    pos = b[b["alvo_matriculado"] == 1]
+    assert len(pos) == 1
+    assert pos.iloc[0]["codpes"] == 201 and pos.iloc[0]["codtur"] == "D1-1"
+    # D2 é livre (fora do currículo) e nunca y=1
+    assert (b[b["coddis"] == "D2"]["alvo_matriculado"] == 0).all()

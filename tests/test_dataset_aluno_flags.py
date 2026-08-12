@@ -96,13 +96,16 @@ def test_saida_com_flags_sem_flag_nao_altera_baseline() -> None:
 
 def test_saida_com_flags_combinacoes() -> None:
     casos = [
-        (False, False, "temp/dataset_aluno.csv"),
-        (True, False, "temp/dataset_aluno_sf.csv"),
-        (False, True, "temp/dataset_aluno_bl.csv"),
-        (True, True, "temp/dataset_aluno_sf_bl.csv"),
+        (False, False, False, False, "temp/dataset_aluno.csv"),
+        (True, False, False, False, "temp/dataset_aluno_sf.csv"),
+        (False, True, False, False, "temp/dataset_aluno_bl.csv"),
+        (False, False, True, False, "temp/dataset_aluno_xc.csv"),
+        (False, False, False, True, "temp/dataset_aluno_par.csv"),
+        (True, True, True, True, "temp/dataset_aluno_sf_bl_xc_par.csv"),
     ]
-    for ef, bl, esperado in casos:
-        cfg = _cfg(excluir_fantasmas=ef, balancear_l=bl)
+    for ef, bl, xc, par, esperado in casos:
+        cfg = _cfg(excluir_fantasmas=ef, balancear_l=bl,
+                   cross_completo=xc, paralelo=par)
         assert str(_saida_com_flags(cfg)) == esperado
 
 
@@ -115,6 +118,9 @@ def test_config_defaults_preservam_baseline() -> None:
     cfg = _cfg()
     assert cfg.excluir_fantasmas is False
     assert cfg.balancear_l is False
+    assert cfg.cross_completo is False
+    assert cfg.paralelo is False
+    assert cfg.workers == 0  # 0 = auto (todos os cores)
 
 
 # ---------------------------------------------------------------------------

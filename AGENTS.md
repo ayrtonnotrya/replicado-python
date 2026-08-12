@@ -175,6 +175,24 @@ sempre recebe sufixo curto conforme a combinação de flags (`_sf`, `_bl`,
   (4.817 em todas as combinações); sem linhas duplicadas; `sf` removeu
   O-neg 117.225→15.977 e E/C-neg 53.849→13.083; `bl` levou L-neg a `round(
   pos_L / razão média O/E/C)`.
+- **`cross_completo`** (`--cross-completo`, env `REPLICADO_ALUNO_CROSS_COMPLETO`,
+  sufixo `_xc`): gera o **produto cartesiano** de TODOS os ativos × TODAS as
+  turmas IME do semestre (incluindo todos os L), excluindo `(aluno, coddis)`
+  já aprovados; `alvo_matriculado=1` sse o par é matrícula real. Baseline
+  ~1,33M linhas → ~7,3M (2010-2026). **Atenção**: o cross é dominado por
+  negativos triviais (aluno × turma fora do currículo/horizonte) — infla
+  accuracy/AUC sem sinal preditivo real; útil só para matriz de recomendação
+  ampla. Com `cross_completo` o currículo vazio não encurta o semestre (tudo
+  vira 'L').
+- **`paralelo`/`workers`** (`--paralelo`, `--workers N`, env
+  `REPLICADO_ALUNO_PARALELO`/`REPLICADO_ALUNO_WORKERS`, sufixo `_par`):
+  paraleliza o laço por semestre via `ProcessPoolExecutor` com `initializer`
+  (funciona com fork e spawn). Default `workers=0` = **todos os cores
+  disponíveis** (`os.cpu_count()`). A anonimização usa mapa pré-computado
+  (`_precomputar_mapa`, por `codpes` → `ALU_XXXX` determinístico) para
+  consistência entre workers; cada worker grava seu chunk em arquivo próprio e
+  o pai concatena em ordem (streaming preserva RAM). Sequencial (default,
+  `paralelo=False`) permanece bit-idêntico ao baseline.
 
 ## Convenções
 

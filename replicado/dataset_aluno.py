@@ -50,6 +50,7 @@ Uso
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -150,6 +151,24 @@ class DatasetAlunoConfig(DatasetConfig):
     # ``max_neg_turmas_por_disc`` NÃO se aplica a L (volume controlado pelo
     # alvo de razão). Sufixo do arquivo de saída: ``_bl``.
     balancear_l: bool = False
+    # Cross completo: em vez de gerar apenas os negativos plausíveis
+    # (O/E/C no currículo+horizonte, L amostrados), gera o **produto
+    # cartesiano** de TODOS os alunos ativos × TODAS as turmas IME do
+    # semestre (incluindo todos os L), excluindo (aluno, coddis) já
+    # aprovados. Default False: preserva o baseline (~1,33M linhas); com
+    # True, ~7,3M linhas (2010-2026). ATENÇÃO: o cross é dominado por
+    # negativos triviais (aluno × turma fora do currículo/horizonte) — útil
+    # para matriz de recomendação ampla, mas pode inflar accuracy/AUC sem
+    # sinal preditivo real. Sufixo do arquivo de saída: ``_xc``.
+    cross_completo: bool = False
+    # Paraleliza o laço por semestre (ProcessPoolExecutor). Os semestres são
+    # independentes; o mapeamento de anonimização é pré-computado e cada
+    # worker grava seu chunk em arquivo próprio (streaming preserva RAM).
+    # ``paralelo=True`` (sem ``workers``) usa todos os cores disponíveis.
+    # ``workers=0`` = auto (os.cpu_count()); ``workers=1`` = sequencial
+    # bit-idêntico ao baseline. Sufixo do arquivo de saída: ``_par``.
+    paralelo: bool = False
+    workers: int = 0
     saida: Path = SAIDA_DEFAULT
 
     @classmethod
@@ -188,6 +207,15 @@ class DatasetAlunoConfig(DatasetConfig):
         bl = env_bool("REPLICADO_ALUNO_BALANCEAR_L")
         if bl is not None:
             overrides.setdefault("balancear_l", bl)
+        xc = env_bool("REPLICADO_ALUNO_CROSS_COMPLETO")
+        if xc is not None:
+            overrides.setdefault("cross_completo", xc)
+        par = env_bool("REPLICADO_ALUNO_PARALELO")
+        if par is not None:
+            overrides.setdefault("paralelo", par)
+        v = env_int("REPLICADO_ALUNO_WORKERS")
+        if v is not None:
+            overrides.setdefault("workers", v)
         # ``saida`` default já é dataset_aluno.csv; permite override via env.
         s = os.getenv("REPLICADO_ALUNO_SAIDA")
         if s and s.strip():
@@ -516,16 +544,7 @@ def _alunos_ativos(
         cand, dados.get("hist_aluno"), sem_alvo, dta_corte
     )
     mask_ativo = com_evidencia | sem_evidencia
-    # Métrica de leakage para inspeção (consolida N "fantasmas").
-    n_ghost = int((cand["_stapgm_pit"].notna() & ~mask_ativo).sum())
     cand = cand[mask_ativo].drop(columns=["_stapgm_pit"])
-    if n_ghost:
-        sys.stderr.write(
-            f"[alunos_ativos] D{dta_corte.date()}: filtro "
-            f"point-in-time (HISTPROGGR/jubilamento) removeu {n_ghost:,} "
-            f"evadidos/trancados/inativos que passavam pelo filtro de "
-            f"dtaclcgru.\n"
-        )
 
     return cand[["codpes", "codcur", "codhab", "dtaing"]].drop_duplicates(
         ["codpes", "codcur", "codhab"]
@@ -1119,7 +1138,9 @@ def _build_matriz_sem(
     necess = _necessidade_curricular(
         alunos, elig, dados["grade"], dados["curriculo"]
     )
-    if not len(necess):
+    # No cross completo os negativos não dependem do currículo (todo par
+    # ativo×turma entra); currículo vazio → todos os pares viram 'L'.
+    if not len(necess) and not cfg.cross_completo:
         return pd.DataFrame()
 
     registros, concluido = _filtrar_hist_passado(dados["hist_aluno"], dta_corte)
@@ -1147,105 +1168,129 @@ def _build_matriz_sem(
         set(pos["codpes"].astype(int)) if len(pos) else set()
     )
 
-    # ---- Negativos (y=0): obrigatórias/eletivas pendentes, na janela ------
-    # Junta necessidade (aluno, coddis) com créditos reprovados/trancamento.
-    cand = necess.merge(
-        out_dis, on=["codpes", "coddis"], how="left"
-    ).merge(
-        alunos[["codpes", "sem_casa", "dtaing"]], on="codpes", how="left"
-    )
-    cand = cand.fillna(
-        {
-            "qtd_reprovacoes_discip": 0,
-            "flag_aprovado_discip": 0,
-            "flag_trancamento_previo": 0,
-        }
-    )
-    # Exclusão obrigatória: já aprovado antes do Dia D.
-    cand = cand[cand["flag_aprovado_discip"] == 0]
-    # Só gera negativos para O/E/C (Livres não entram via grade).
-    cand = cand[cand["status_obrigatoriedade_otimista"].isin(["O", "E/C"])]
-    # Horizonte temporal: semestre ideal ≤ sem_casa + horizonte.
-    cand["min_numsemidl"] = pd.to_numeric(cand["min_numsemidl"], errors="coerce")
-    cand = cand[cand["min_numsemidl"] <= cand["sem_casa"] + cfg.horizonte_sem]
-
-    # Flag ``excluir_fantasmas``: mantém só negativos de alunos com ≥1
-    # matrícula no semestre (``codpes_matriculados``). ``pos`` fica intacto.
-    if cfg.excluir_fantasmas:
-        cand = cand[cand["codpes"].isin(codpes_matriculados)]
-
-    # Normativa: para o ``neg`` SÓ usamos as 3 chaves primárias
-    # (codpes, coddis, codtur) -- TODAS as features curriculares/históricas
-    # são enriquecidas pós-concat (passo de baixo) via merge LEFT contra
-    # ``necess``/``out_dis``/``alunos_uni``. Antes o ``neg`` já trazia
-    # ``status_obrigatoriedade_otimista`` de ``candid``, gerando colisão
-    # de sufixos (``_x``/``_y``) no merge pós-concat e invertendo o
-    # preenchimento de 'L'. Padronizar ``neg`` ao mesmo esquema de ``pos``
-    # elimina a ambiguidade.
-
+    # ---- Negativos (y=0) ---------------------------------------------------
     # Cruza com turmas ofertadas no semestre (mesma coddis).
     tur = turmas_sem[["coddis", "codtur", "sufixo", "ano_sem", "sem_tipo",
                       "dtainitur"]].drop_duplicates(["coddis", "codtur"])
-    neg = cand[["codpes", "coddis"]].drop_duplicates().merge(
-        tur, on="coddis", how="inner"
-    )
 
-    # Limita o número de turmas por disciplina/aluno para conter explosão.
-    if cfg.max_neg_turmas_por_disc and len(neg):
-        neg = (
-            neg.sort_values(["codpes", "coddis", "codtur"])
-            .groupby(["codpes", "coddis"], sort=False, group_keys=False)
-            .head(cfg.max_neg_turmas_por_disc)
-        )
-
-    # Remove negativos que são, de fato, positivos (matrículas reais).
-    if len(pos):
-        neg = neg.merge(
-            pos[["codpes", "coddis", "codtur"]].assign(_pos=1),
-            on=["codpes", "coddis", "codtur"], how="left",
-        )
-        neg = neg[neg["_pos"].isna()].drop(columns="_pos", errors="ignore")
-    neg["alvo_matriculado"] = 0
-
-    # ---- Negativos adicionais via requerimento (intenção) -----------------
-    if cfg.usar_intencao_requerimento:
-        req_cand = _negativos_via_requerimento(
-            cfg, dados, alunos, turmas_sem, aprovados, dta_corte
-        )
-        if cfg.excluir_fantasmas and len(req_cand):
-            req_cand = req_cand[req_cand["codpes"].isin(codpes_matriculados)]
-        if len(req_cand):
-            # Mesma padronização: só chaves primárias.
-            req_cand = req_cand.merge(
-                tur[["coddis", "codtur", "sufixo", "ano_sem", "sem_tipo",
-                     "dtainitur"]],
-                on=["coddis", "codtur"], how="left",
+    if cfg.cross_completo:
+        # ---- Cross completo: todos os ativos × todas as turmas ------------
+        # Produto cartesiano (codpes, coddis, codtur), excluindo (aluno,
+        # coddis) já aprovado antes do Dia D. alvo = 1 se o par for matrícula
+        # real (pos), 0 caso contrário. Gera ~7,3M linhas (2010-2026).
+        alu = pd.DataFrame({"codpes": sorted(codpes_ativos)})
+        base = alu.merge(tur, how="cross")
+        if len(aprovados):
+            base = base.merge(
+                aprovados.assign(_ap=1), on=["codpes", "coddis"], how="left"
             )
-            # Não duplica linhas já presentes em neg/pos.
-            base_keys = pd.concat(
-                [
-                    neg[["codpes", "coddis", "codtur"]],
-                    pos[["codpes", "coddis", "codtur"]],
-                ]
-            ).assign(_e=1)
-            req_cand = req_cand.merge(
-                base_keys, on=["codpes", "coddis", "codtur"], how="left"
+            base = base[base["_ap"].isna()].drop(columns="_ap", errors="ignore")
+        if len(pos):
+            pos_keys = pos[["codpes", "coddis", "codtur"]].assign(_pos=1)
+            base = base.merge(
+                pos_keys, on=["codpes", "coddis", "codtur"], how="left"
             )
-            req_cand = req_cand[req_cand["_e"].isna()].drop(columns="_e", errors="ignore")
-            req_cand["alvo_matriculado"] = 0
-            neg = pd.concat([neg, req_cand], ignore_index=True)
-
-    # ---- Negativos L (livres) balanceados — flag ``balancear_l`` ----------
-    # ``neg`` aqui já consolida grade + REQUERIMENTOGR; ``_negativos_l_balanceados``
-    # conta os neg-L existentes no alvo de razão para não re-amostrar nem duplicar.
-    if cfg.balancear_l and len(pos) and len(neg):
-        neg_l = _negativos_l_balanceados(
-            cfg, pos, neg, necess, aprovados, tur, sem_alvo
+        else:
+            base["_pos"] = 0
+        base["alvo_matriculado"] = base["_pos"].fillna(0).astype(int)
+        base = base.drop(columns="_pos", errors="ignore")
+    else:
+        # ---- Negativos estruturados (O/E/C no currículo+horizonte) --------
+        # Junta necessidade (aluno, coddis) com créditos reprovados/trancamento.
+        cand = necess.merge(
+            out_dis, on=["codpes", "coddis"], how="left"
+        ).merge(
+            alunos[["codpes", "sem_casa", "dtaing"]], on="codpes", how="left"
         )
-        if len(neg_l):
-            neg = pd.concat([neg, neg_l], ignore_index=True)
+        cand = cand.fillna(
+            {
+                "qtd_reprovacoes_discip": 0,
+                "flag_aprovado_discip": 0,
+                "flag_trancamento_previo": 0,
+            }
+        )
+        # Exclusão obrigatória: já aprovado antes do Dia D.
+        cand = cand[cand["flag_aprovado_discip"] == 0]
+        # Só gera negativos para O/E/C (Livres não entram via grade).
+        cand = cand[cand["status_obrigatoriedade_otimista"].isin(["O", "E/C"])]
+        # Horizonte temporal: semestre ideal ≤ sem_casa + horizonte.
+        cand["min_numsemidl"] = pd.to_numeric(cand["min_numsemidl"], errors="coerce")
+        cand = cand[cand["min_numsemidl"] <= cand["sem_casa"] + cfg.horizonte_sem]
 
-    base = pd.concat([pos, neg], ignore_index=True)
+        # Flag ``excluir_fantasmas``: mantém só negativos de alunos com ≥1
+        # matrícula no semestre (``codpes_matriculados``). ``pos`` intacto.
+        if cfg.excluir_fantasmas:
+            cand = cand[cand["codpes"].isin(codpes_matriculados)]
+
+        # Normativa: para o ``neg`` SÓ usamos as 3 chaves primárias
+        # (codpes, coddis, codtur) -- TODAS as features curriculares/históricas
+        # são enriquecidas pós-concat (passo de baixo) via merge LEFT contra
+        # ``necess``/``out_dis``/``alunos_uni``. Antes o ``neg`` já trazia
+        # ``status_obrigatoriedade_otimista`` de ``candid``, gerando colisão
+        # de sufixos (``_x``/``_y``) no merge pós-concat e invertendo o
+        # preenchimento de 'L'. Padronizar ``neg`` ao mesmo esquema de ``pos``
+        # elimina a ambiguidade.
+
+        neg = cand[["codpes", "coddis"]].drop_duplicates().merge(
+            tur, on="coddis", how="inner"
+        )
+
+        # Limita o número de turmas por disciplina/aluno para conter explosão.
+        if cfg.max_neg_turmas_por_disc and len(neg):
+            neg = (
+                neg.sort_values(["codpes", "coddis", "codtur"])
+                .groupby(["codpes", "coddis"], sort=False, group_keys=False)
+                .head(cfg.max_neg_turmas_por_disc)
+            )
+
+        # Remove negativos que são, de fato, positivos (matrículas reais).
+        if len(pos):
+            neg = neg.merge(
+                pos[["codpes", "coddis", "codtur"]].assign(_pos=1),
+                on=["codpes", "coddis", "codtur"], how="left",
+            )
+            neg = neg[neg["_pos"].isna()].drop(columns="_pos", errors="ignore")
+        neg["alvo_matriculado"] = 0
+
+        # ---- Negativos adicionais via requerimento (intenção) -------------
+        if cfg.usar_intencao_requerimento:
+            req_cand = _negativos_via_requerimento(
+                cfg, dados, alunos, turmas_sem, aprovados, dta_corte
+            )
+            if cfg.excluir_fantasmas and len(req_cand):
+                req_cand = req_cand[req_cand["codpes"].isin(codpes_matriculados)]
+            if len(req_cand):
+                # Mesma padronização: só chaves primárias.
+                req_cand = req_cand.merge(
+                    tur[["coddis", "codtur", "sufixo", "ano_sem", "sem_tipo",
+                         "dtainitur"]],
+                    on=["coddis", "codtur"], how="left",
+                )
+                # Não duplica linhas já presentes em neg/pos.
+                base_keys = pd.concat(
+                    [
+                        neg[["codpes", "coddis", "codtur"]],
+                        pos[["codpes", "coddis", "codtur"]],
+                    ]
+                ).assign(_e=1)
+                req_cand = req_cand.merge(
+                    base_keys, on=["codpes", "coddis", "codtur"], how="left"
+                )
+                req_cand = req_cand[req_cand["_e"].isna()].drop(
+                    columns="_e", errors="ignore"
+                )
+                req_cand["alvo_matriculado"] = 0
+                neg = pd.concat([neg, req_cand], ignore_index=True)
+
+        # ---- Negativos L (livres) balanceados — flag ``balancear_l`` ------
+        if cfg.balancear_l and len(pos) and len(neg):
+            neg_l = _negativos_l_balanceados(
+                cfg, pos, neg, necess, aprovados, tur, sem_alvo
+            )
+            if len(neg_l):
+                neg = pd.concat([neg, neg_l], ignore_index=True)
+
+        base = pd.concat([pos, neg], ignore_index=True)
     if not len(base):
         return base
     base["ano_sem"] = sem_alvo
@@ -1682,7 +1727,8 @@ def _saida_com_flags(cfg: DatasetAlunoConfig) -> Path:
     para **nunca sobrescrever** o dataset baseline.
 
     Sufixos curtos (decisão 6): ``_sf`` (excluir_fantasmas), ``_bl``
-    (balancear_l), ``_sf_bl`` (ambas). Com nenhuma flag ativa, retorna o
+    (balancear_l), ``_xc`` (cross_completo), ``_par`` (paralelo), e
+    combinações (``_sf_bl_xc_par``, ...). Com nenhuma flag ativa, retorna o
     caminho original sem alteração — o baseline fica bit-identico.
     """
     sufixo = ""
@@ -1690,6 +1736,10 @@ def _saida_com_flags(cfg: DatasetAlunoConfig) -> Path:
         sufixo += "_sf"
     if cfg.balancear_l:
         sufixo += "_bl"
+    if cfg.cross_completo:
+        sufixo += "_xc"
+    if cfg.paralelo:
+        sufixo += "_par"
     if not sufixo:
         return cfg.saida
     return cfg.saida.with_name(f"{cfg.saida.stem}{sufixo}{cfg.saida.suffix}")
@@ -1698,6 +1748,181 @@ def _saida_com_flags(cfg: DatasetAlunoConfig) -> Path:
 # ---------------------------------------------------------------------------
 # Montagem final
 # ---------------------------------------------------------------------------
+def _montar_chunk(
+    cfg: DatasetAlunoConfig,
+    dados: dict[str, pd.DataFrame],
+    turmas_feat: pd.DataFrame,
+    turmas_sem: pd.DataFrame,
+    sem_alvo: int,
+    mapa_aluno: dict[int, str],
+    cont_aluno: list[int],
+) -> pd.DataFrame | None:
+    """Monta o chunk (matriz + features + anonimização) de UM semestre.
+
+    Retorna o DataFrame já anonimizado e com as colunas de vazamento descartadas,
+    ou ``None`` se o semestre não produzir linhas. Usado pelo modo sequencial e
+    pelos workers do modo paralelo.
+    """
+    base = _build_matriz_sem(cfg, dados, int(sem_alvo), turmas_sem)
+    if not len(base):
+        return None
+    base["ano_sem"] = int(sem_alvo)
+
+    # Módulo B (pré-requisitos).
+    dta_corte = base["dtainitur"].min() - pd.Timedelta(days=cfg.dias_corte)
+    base = _status_prerequisito_aluno(base, cfg, dados, int(sem_alvo), dta_corte)
+
+    # Módulo D (atrito).
+    base = _modulo_d_atrito(base, cfg, dados, turmas_sem)
+
+    # Módulos E/F (features da turma).
+    if len(turmas_feat):
+        base = base.merge(
+            turmas_feat, on=["coddis", "codtur", "ano_sem"], how="left"
+        )
+
+    # Anonimização LGPD (mapa persistente entre semestres).
+    base = _anonimizar_alunos(base, mapa_aluno, cont_aluno)
+
+    # Descarte de vazamento/intermediárias.
+    col_id = ["id_aluno", "coddis", "codtur", "sufixo", "ano_sem", "sem_tipo"]
+    descarte = set(COLUNAS_VAZAMENTO_ALUNO) | set(COLUNAS_DESCARTE_ALUNO)
+    feat_cols = [
+        c for c in base.columns
+        if c not in col_id and c not in descarte and c != "alvo_matriculado"
+    ]
+    final_cols = [c for c in col_id + feat_cols + ["alvo_matriculado"]
+                  if c not in descarte]
+    keep = [c for c in final_cols if c in base.columns]
+    return base[keep]
+
+
+def _precomputar_mapa(dados: dict[str, pd.DataFrame]) -> dict[int, str]:
+    """Mapeamento determinístico codpes → id_aluno (para o modo paralelo).
+
+    Usa a união de todos os ``codpes`` da HABILPROGGR (superset dos ativos),
+    ordenados, como universo — garante o MESMO id para o mesmo ``codpes`` entre
+    os semestres sem precisar de estado global sequencial. IDs ociosos (codpes
+    nunca ativos) são inofensivos.
+    """
+    hp = dados.get("habilprog")
+    if hp is None or not len(hp):
+        return {}
+    codpes = sorted({int(c) for c in hp["codpes"] if pd.notna(c)})
+    return {c: f"ALU_{i:04d}" for i, c in enumerate(codpes, start=1)}
+
+
+# Globais de trabalho dos workers (setadas via ``initializer`` de cada worker).
+_PAR_CFG: DatasetAlunoConfig | None = None
+_PAR_DADOS: dict[str, pd.DataFrame] | None = None
+_PAR_TURMAS_FEAT: pd.DataFrame | None = None
+_PAR_TURMAS_F: pd.DataFrame | None = None
+_PAR_MAPA: dict[int, str] | None = None
+
+
+def _init_worker(
+    cfg: DatasetAlunoConfig,
+    dados: dict[str, pd.DataFrame],
+    turmas_feat: pd.DataFrame,
+    turmas_f: pd.DataFrame,
+    mapa: dict[int, str],
+) -> None:
+    """Rodado uma vez por worker (``ProcessPoolExecutor(initializer=...)``):
+    fixa os dados compartilhados em globais do módulo. Funciona com fork
+    (herda via COW) e com spawn (recebe por pickle)."""
+    global _PAR_CFG, _PAR_DADOS, _PAR_TURMAS_FEAT, _PAR_TURMAS_F, _PAR_MAPA
+    _PAR_CFG = cfg
+    _PAR_DADOS = dados
+    _PAR_TURMAS_FEAT = turmas_feat
+    _PAR_TURMAS_F = turmas_f
+    _PAR_MAPA = mapa
+
+
+def _processar_semestre(sem_alvo: int, out_path: str) -> tuple[int, int]:
+    """Função executada por cada worker: monta o chunk do semestre e o grava.
+
+    Escreve um CSV próprio (com header) para ``out_path``. Retorna
+    (n_linhas, n_pos). Lê os globais ``_PAR_*`` setados pelo ``_init_worker``.
+    """
+    cfg = _PAR_CFG
+    dados = _PAR_DADOS
+    turmas_feat = _PAR_TURMAS_FEAT
+    turmas_f = _PAR_TURMAS_F
+    mapa = _PAR_MAPA
+    assert cfg is not None and dados is not None and mapa is not None
+    turmas_sem = turmas_f[turmas_f["ano_sem"] == sem_alvo]
+    cont = [len(mapa) + 1]
+    chunk = _montar_chunk(
+        cfg, dados, turmas_feat, turmas_sem, int(sem_alvo), mapa, cont
+    )
+    if chunk is None or not len(chunk):
+        return 0, 0
+    chunk.to_csv(out_path, index=False)
+    n_pos = int(chunk["alvo_matriculado"].sum()) if "alvo_matriculado" in chunk else 0
+    return int(len(chunk)), n_pos
+
+
+def _montar_paralelo(
+    cfg: DatasetAlunoConfig,
+    dados: dict[str, pd.DataFrame],
+    turmas_feat: pd.DataFrame,
+    sems: list[int],
+    saida_efetiva: Path,
+) -> tuple[int, int]:
+    """Executa o laço por semestre em paralelo e concatena os chunks."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    import tempfile
+
+    turmas_f = filtrar_turmas(cfg, dados["turmas"])
+    mapa = _precomputar_mapa(dados)
+    workers = cfg.workers if cfg.workers and cfg.workers > 0 else (os.cpu_count() or 1)
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="dataset_aluno_chunks_"))
+    n_linhas = 0
+    n_pos = 0
+    header: str | None = None
+    try:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_worker,
+            initargs=(cfg, dados, turmas_feat, turmas_f, mapa),
+        ) as ex:
+            futures = {
+                ex.submit(_processar_semestre, int(s), str(tmpdir / f"sem_{s}.csv")): int(s)
+                for s in sems
+            }
+            for fut in futures:
+                ln, p = fut.result()
+                n_linhas += ln
+                n_pos += p
+        # Concatena os chunks em ordem determinística, preservando o header.
+        saida_efetiva.parent.mkdir(parents=True, exist_ok=True)
+        with saida_efetiva.open("w", encoding="utf-8") as final:
+            for s in sems:
+                p = tmpdir / f"sem_{s}.csv"
+                if not p.exists():
+                    continue
+                with p.open("r", encoding="utf-8") as f:
+                    h = f.readline()
+                    if header is None:
+                        header = h
+                        final.write(header)
+                    else:
+                        if h != header:
+                            raise RuntimeError(
+                                f"Colunas divergentes no semestre {s}: {h!r} != {header!r}"
+                            )
+                    # Copia o restante (dados) do chunk para o final.
+                    for line in f:
+                        final.write(line)
+    finally:
+        for p in tmpdir.glob("*.csv"):
+            p.unlink(missing_ok=True)
+        tmpdir.rmdir()
+    return n_linhas, n_pos
+
+
 def montar_dataset_aluno(
     cfg: DatasetAlunoConfig | None = None,
     forcar_extracao: bool = False,
@@ -1724,13 +1949,29 @@ def montar_dataset_aluno(
     # ~20M linhas em RAM (catástrofe de memória no concat final).
     turmas_f = filtrar_turmas(cfg, dados["turmas"])
     sems = sorted(turmas_f["ano_sem"].unique())
+
+    saida_efetiva.parent.mkdir(parents=True, exist_ok=True)
+    if cfg.paralelo:
+        n_w = cfg.workers if cfg.workers and cfg.workers > 0 else (os.cpu_count() or 1)
+        print(f"[paralelo] {n_w} workers, {len(sems)} semestres...")
+        n_linhas, n_pos = _montar_paralelo(cfg, dados, turmas_feat, sems, saida_efetiva)
+        if not n_linhas:
+            print("[aviso] Nenhuma linha produzida — verifique cache/escopo.")
+            return pd.DataFrame(columns=["id_aluno", "coddis", "codtur",
+                                         "sufixo", "ano_sem", "sem_tipo",
+                                         "alvo_matriculado"])
+        print(
+            f"\nDataset salvo em {saida_efetiva} "
+            f"({n_linhas} linhas, pos={n_pos} neg={n_linhas - n_pos})"
+        )
+        return pd.read_csv(saida_efetiva, nrows=1000)
+
     mapa_aluno: dict[int, str] = {}
     cont_aluno: list[int] = [0]
 
     col_id = ["id_aluno", "coddis", "codtur", "sufixo", "ano_sem", "sem_tipo"]
     descarte = set(COLUNAS_VAZAMENTO_ALUNO) | set(COLUNAS_DESCARTE_ALUNO)
 
-    saida_efetiva.parent.mkdir(parents=True, exist_ok=True)
     n_linhas = 0
     n_pos = 0
     header_written = False
@@ -1738,30 +1979,14 @@ def montar_dataset_aluno(
     with tqdm(sems, desc="Semestres", unit="sem") as bar:
         for sem_alvo in bar:
             turmas_sem = turmas_f[turmas_f["ano_sem"] == sem_alvo]
-            base = _build_matriz_sem(cfg, dados, int(sem_alvo), turmas_sem)
-            if not len(base):
-                continue
-            base["ano_sem"] = int(sem_alvo)
-
-            # Módulo B (pré-requisitos).
-            dta_corte = base["dtainitur"].min() - pd.Timedelta(days=cfg.dias_corte)
-            base = _status_prerequisito_aluno(
-                base, cfg, dados, int(sem_alvo), dta_corte
+            base = _montar_chunk(
+                cfg, dados, turmas_feat, turmas_sem, int(sem_alvo),
+                mapa_aluno, cont_aluno,
             )
+            if base is None or not len(base):
+                continue
 
-            # Módulo D (atrito).
-            base = _modulo_d_atrito(base, cfg, dados, turmas_sem)
-
-            # Módulos E/F (features da turma).
-            if len(turmas_feat):
-                base = base.merge(
-                    turmas_feat, on=["coddis", "codtur", "ano_sem"], how="left"
-                )
-
-            # Anonimização LGPD (por semestre — mapa persistente).
-            base = _anonimizar_alunos(base, mapa_aluno, cont_aluno)
-
-            # Seleção de colunas + descarte de vazamento/intermediárias.
+            # Seleção de colunas + descarte (deriva final_cols na 1ª fatia).
             if not final_cols:
                 feat_cols = [
                     c for c in base.columns
@@ -1769,8 +1994,6 @@ def montar_dataset_aluno(
                     and c != "alvo_matriculado"
                 ]
                 final_cols = col_id + feat_cols + ["alvo_matriculado"]
-                # Remove qualquer coluna de vazamento que tenha espiado
-                # (defensivo — já não devem existir).
                 final_cols = [c for c in final_cols if c not in descarte]
             keep = [c for c in final_cols if c in base.columns]
             base = base[keep]
@@ -1830,6 +2053,19 @@ def main(argv: Iterable[str] | None = None) -> int:
         help="Amostra negativos L entre alunos com ≥1 matrícula até a razão "
              "média O/E/C (sufixo _bl)",
     )
+    p.add_argument(
+        "--cross-completo", dest="cross_completo", action="store_true",
+        help="Gera o produto cartesiano de todos os ativos × todas as turmas "
+             "do semestre (incluindo todos os L; sufixo _xc)",
+    )
+    p.add_argument(
+        "--paralelo", dest="paralelo", action="store_true",
+        help="Paraleliza o laço por semestre (ProcessPoolExecutor; sufixo _par)",
+    )
+    p.add_argument(
+        "--workers", type=int, default=None,
+        help="Nº de processos para o modo paralelo (default: 1)",
+    )
     args = p.parse_args(list(argv) if argv is not None else None)
 
     overrides: dict[str, Any] = {}
@@ -1852,6 +2088,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     overrides["usar_intencao_requerimento"] = args.usar_intencao_requerimento
     overrides["excluir_fantasmas"] = args.excluir_fantasmas
     overrides["balancear_l"] = args.balancear_l
+    overrides["cross_completo"] = args.cross_completo
+    overrides["paralelo"] = args.paralelo
+    if args.workers is not None:
+        overrides["workers"] = args.workers
     if args.saida is not None:
         overrides["saida"] = args.saida
 
