@@ -139,7 +139,7 @@ def _resume(
 
     # ---- Refatoração aplicada (exclusão E/T/S + dtaclcgru backstop) ------
     from replicado.dataset_aluno import _alunos_ativos as _alunos_refatorado
-    novos = _alunos_refatorado(cfg, dados, dta_corte)
+    novos = _alunos_refatorado(cfg, dados, sem_alvo, dta_corte)
     n_novos = len(novos)
     n_novos_codpes = int(novos["codpes"].nunique())
     n_evasao_dtaclcgru_pct = 100.0 * n_fantasmas / n_total if n_total else 0.0

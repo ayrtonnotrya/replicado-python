@@ -341,11 +341,70 @@ def _sem_casa(dtaing: pd.Timestamp, ano_alvo: int, sem_alvo: int) -> int:
     return int(max(casa, 1))
 
 
+def _sem_ingresso(dtaing: pd.Timestamp) -> int:
+    """``ano*10+sem`` (sem∈{1,2}) do semestre de ingresso do aluno."""
+    if pd.isna(dtaing):
+        return 0
+    return int(dtaing.year) * 10 + (2 if dtaing.month > 6 else 1)
+
+
 # ---------------------------------------------------------------------------
 # Bloco 1: alunos ativos + currículos elegíveis + necessidade curricular
 # ---------------------------------------------------------------------------
+def _sem_atividade_recente(
+    cand: pd.DataFrame,
+    hist: pd.DataFrame | None,
+    sem_alvo: int,
+    dta_corte: pd.Timestamp,
+) -> pd.Series:
+    """Backstop de **jubilamento** (Regimento Geral da USP, art. 75/76) para
+    alunos SEM evidência point-in-time de HISTPROGGR ≤ Dia D.
+
+    O pipeline não possui HISTPROGGR/HISTESCOLARGR anteriores a ~2009 no cache
+    (``data_min = ano_min-1``), então ex-alunos pré-2010 que nunca colaram grau
+    nem deixaram status morto caíam no fallback "sem evidência → ativo" e
+    inflavam o universo de ativos (~4.100 fantasmas/semestre). Pela regra da
+    USP, o aluno é desligado se **não se matricular** ou **não obtiver nenhum
+    crédito em dois semestres consecutivos** (exceto trancamento total). Então
+    aqui o aluno sem evidência PIT permanece ativo sse:
+
+    - obteve ≥1 crédito (``rstfim`` de aprovação, consolidado antes do Dia D)
+      nos 2 semestres letivos anteriores; OU
+    - ingressou nesses 2 semestres (novo demais para ter 2 semestres vazios e
+      jubilar).
+
+    Point-in-time: ``dtaultalt < dta_corte`` garante que só contamos créditos
+    conhecidos no Dia D (Regra de Ouro). Alunos reais ativos têm evidência
+    HISTPROGGR (último ``stapgm`` = H/A/R/EH) e passam pelo ramo de evidência —
+    este backstop só atinge o grupo sem HISTPROGGR no cache (os fantasmas).
+    """
+    n = len(cand)
+    ativos = pd.Series(False, index=cand.index)
+    t1 = _sem_anterior_letivo(sem_alvo)
+    t2 = _sem_anterior_letivo(t1)
+    if hist is not None and len(hist) and "ano_sem" in hist.columns:
+        h = hist[
+            hist["ano_sem"].isin({t1, t2})
+            & hist["rstfim"].isin(RSTFM_APROVACAO)
+            & (hist["dtaultalt"].isna() | (hist["dtaultalt"] < dta_corte))
+        ]
+        if len(h):
+            recentes = set(h["codpes"].astype(int))
+            ativos |= cand["codpes"].astype(int).isin(recentes)
+    # Novos demais para jubilar: ingresso dentro dos últimos 2 semestres.
+    if "dtaing" in cand.columns and cand["dtaing"].notna().any():
+        ing = cand["dtaing"].dt.year * 10 + (
+            (cand["dtaing"].dt.month > 6).astype(int) + 1
+        )
+        ativos |= ing >= t2
+    return ativos
+
+
 def _alunos_ativos(
-    cfg: DatasetAlunoConfig, dados: dict[str, pd.DataFrame], dta_corte: pd.Timestamp
+    cfg: DatasetAlunoConfig,
+    dados: dict[str, pd.DataFrame],
+    sem_alvo: int,
+    dta_corte: pd.Timestamp,
 ) -> pd.DataFrame:
     """Alunos da unidade **ativos no Dia D** do semestre alvo (point-in-time).
 
@@ -357,8 +416,18 @@ def _alunos_ativos(
     ``H`` (Histórico/Habilitação) e ``EH`` (encerramento de habilitação
     anterior ao trocar de ênfase) NÃO matam o programa, e o último registro
     da imensa maioria dos veteranos é ``H``; exigir ``∈ {A,R}`` (versão
-    anterior) deletava os veteranos reais da base. Alunos sem nenhuma
-    HISTPROGGR ≤ Dia D ficam no time (não há evidência de evasão).
+    anterior) deletava os veteranos reais da base.
+
+    Alunos **sem** HISTPROGGR ≤ Dia D (cobertura parcial do cache: a
+    HISTPROGGR/HISTESCOLARGR só começa ~2009-2010, ``data_min = ano_min-1``)
+    caem no backstop de **jubilamento** da USP (Reg. Geral, art. 75/76): o
+    aluno é desligado se não se matricular / não obtiver nenhum crédito em
+    dois semestres consecutivos. Permanencem ativos sse obtiveram ≥1 crédito
+    (aprovado, antes do Dia D) nos 2 semestres letivos anteriores OU
+    ingressaram nesses 2 semestres (novos demais para jubilar) — ver
+    :func:`_sem_atividade_recente`. Sem isso, ex-alunos pré-2010 sem colação
+    nem status morto inflavam o universo de ativos em ~4.100 fantasmas/
+    semestre (o ~6.000 por semestre vs ~1.600 reais do LOCALIZAPESSOA).
 
     Camada de piso (hard backstop): ``dtaclcgru`` (colação) ≥ Dia D — quem já
     colou-grau antes do Dia D jamais pode estar matriculado naquele semestre,
@@ -429,24 +498,34 @@ def _alunos_ativos(
                 .rename(columns={"stapgm": "_stapgm_pit"})
             )
             cand = cand.merge(ult, on=["codpes", "codpgm"], how="left")
-            # Conserva quem NÃO tem HISTPROGGR <= Dia D (cobertura parcial da
-            # HISTPROGGR no cache ≈ 45% dos codpes); os demais seguem o piso
-            # dtaclcgru como único backstop. Quem TEM evidência só sai se o
-            # último status for morto (E/T/S). Lógica por EXCLUSÃO: ``H``/``EH``
-            # (habilitação/ênfase) e ``A``/``R`` mantêm o programa vivo — exigir
-            # apenas {A,R} deletaria veteranos cujo último evento é ``H``.
-            mask_ativo = cand["_stapgm_pit"].isna() | ~cand["_stapgm_pit"].isin(
-                MORTO_STAPGM
-            )
-            # Métrica de leakage para inspeção (consolida N "fantasmas").
-            n_ghost = int((cand["_stapgm_pit"].notna() & ~mask_ativo).sum())
-            cand = cand[mask_ativo].drop(columns=["_stapgm_pit"])
-            if n_ghost:
-                sys.stderr.write(
-                    f"[alunos_ativos] D{dta_corte.date()}: filtro "
-                    f"point-in-time (HISTPROGGR) removeu {n_ghost:,} evadidos/"
-                    f"trancados que passavam pelo filtro de dtaclcgru.\n"
-                )
+        else:
+            cand["_stapgm_pit"] = pd.NA
+    else:
+        # Sem cache de HISTPROGGR: ninguém tem evidência PIT → todos seguem o
+        # backstop de jubilamento abaixo (sem atividade recente, desliga).
+        cand["_stapgm_pit"] = pd.NA
+
+    # Com evidência PIT: só status morto (E/T/S) remove (lógica por exclusão
+    # — ``H``/``EH``/``A``/``R`` mantêm o programa vivo).
+    com_evidencia = cand["_stapgm_pit"].notna() & ~cand["_stapgm_pit"].isin(
+        MORTO_STAPGM
+    )
+    # Sem evidência PIT (HISTPROGGR ausente ≤ Dia D): backstop de jubilamento
+    # da USP (art. 75/76) — sem atividade recente, desliga.
+    sem_evidencia = cand["_stapgm_pit"].isna() & _sem_atividade_recente(
+        cand, dados.get("hist_aluno"), sem_alvo, dta_corte
+    )
+    mask_ativo = com_evidencia | sem_evidencia
+    # Métrica de leakage para inspeção (consolida N "fantasmas").
+    n_ghost = int((cand["_stapgm_pit"].notna() & ~mask_ativo).sum())
+    cand = cand[mask_ativo].drop(columns=["_stapgm_pit"])
+    if n_ghost:
+        sys.stderr.write(
+            f"[alunos_ativos] D{dta_corte.date()}: filtro "
+            f"point-in-time (HISTPROGGR/jubilamento) removeu {n_ghost:,} "
+            f"evadidos/trancados/inativos que passavam pelo filtro de "
+            f"dtaclcgru.\n"
+        )
 
     return cand[["codpes", "codcur", "codhab", "dtaing"]].drop_duplicates(
         ["codpes", "codcur", "codhab"]
@@ -1015,7 +1094,7 @@ def _build_matriz_sem(
         turmas_sem["dtainitur"].min() - pd.Timedelta(days=cfg.dias_corte)
     )
 
-    alunos = _alunos_ativos(cfg, dados, dta_corte)
+    alunos = _alunos_ativos(cfg, dados, sem_alvo, dta_corte)
     if not len(alunos):
         return pd.DataFrame()
     # A "Heurística de União de Currículos Elegíveis" usa TODAS as
